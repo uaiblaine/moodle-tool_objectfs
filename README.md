@@ -84,7 +84,7 @@ This plugin is GDPR complient if you enable the deletion of remote objects.
 2. Setup your remote object storage. See [Remote object storage setup](#amazon-s3)
 3. Clone this repository into admin/tool/objectfs
 4. Install one of the required SDK libraries for the storage file system that you will be using
-    1. AWS SDK: the SDK is already integrated into Moodle 4.4+
+    1. AWS SDK: the SDK is already integrated into Moodle core (since 4.4), so no extra plugin is required. Do **not** install the legacy `local_aws` plugin on Moodle 4.4+ — a second copy of the AWS SDK can shadow the core one and cause errors such as `Call to undefined function Aws\manifest()` or `Could not resolve an authentication scheme: Signature V4 requires AWS credentials`.
     2. Clone [moodle-local_azureblobstorage](https://github.com/catalyst/moodle-local_azureblobstorage) into local/azureblobstorage for Azure Blob Storage, or
     3. Clone [moodle-local_openstack](https://github.com/matt-catalyst/moodle-local_openstack.git) into local/openstack for openstack(swift) storage
 5. Install the plugins through the moodle GUI.

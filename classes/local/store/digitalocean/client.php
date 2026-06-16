@@ -47,15 +47,6 @@ class client extends s3_client {
     }
 
     /**
-     * We do not need to check for the autoloader as AWS SDK is integrated in to Moodle 4.4
-     *
-     * @return bool
-     */
-    public function get_availability() {
-        return true;
-    }
-
-    /**
      * Check if the client configured properly.
      *
      * @param \stdClass $config Client config.
@@ -81,7 +72,8 @@ class client extends s3_client {
             return;
         }
 
-        $this->client = \Aws\S3\S3Client::factory([
+        $this->ensure_sdk_loaded();
+        $this->client = new \Aws\S3\S3Client([
             'credentials' => ['key' => $config->do_key, 'secret' => $config->do_secret],
             'region' => $config->do_region,
             'endpoint' => 'https://' . $config->do_region . '.digitaloceanspaces.com',

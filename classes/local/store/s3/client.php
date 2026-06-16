@@ -94,12 +94,38 @@ class client extends object_client_base {
     }
 
     /**
-     * We do not need to check for the autoloader as AWS SDK is integrated in to Moodle 4.4
+     * Checks the AWS SDK (shipped with Moodle core in lib/aws-sdk) is available.
      *
      * @return bool
      */
     public function get_availability() {
-        return true;
+        return $this->ensure_sdk_loaded();
+    }
+
+    /**
+     * Ensures the core AWS SDK is loaded and usable.
+     *
+     * The SDK is bundled with Moodle core (lib/aws-sdk) and its classes are
+     * autoloaded, but its namespaced helper functions (e.g. Aws\manifest(),
+     * which the S3Client constructor calls) cannot be autoloaded by PHP. Core
+     * normally requires lib/aws-sdk/src/functions.php during bootstrap, but it
+     * can be missing in some early contexts such as CLI upgrades, producing a
+     * fatal "Call to undefined function Aws\manifest()". Require it defensively.
+     *
+     * @see https://github.com/catalyst/moodle-tool_objectfs/issues/740
+     * @return bool Whether the SDK is available for use.
+     */
+    protected function ensure_sdk_loaded(): bool {
+        global $CFG;
+
+        if (!function_exists('Aws\manifest')) {
+            $functionsfile = $CFG->libdir . '/aws-sdk/src/functions.php';
+            if (is_readable($functionsfile)) {
+                require_once($functionsfile);
+            }
+        }
+
+        return class_exists('\Aws\S3\S3Client') && function_exists('Aws\manifest');
     }
 
     /**
@@ -184,7 +210,8 @@ class client extends object_client_base {
             $options['endpoint'] = $config->s3_base_url;
         }
 
-        $this->client = \Aws\S3\S3Client::factory($options);
+        $this->ensure_sdk_loaded();
+        $this->client = new \Aws\S3\S3Client($options);
     }
 
     /**
@@ -321,6 +348,12 @@ class client extends object_client_base {
             } else {
                 $this->client->headBucket(['Bucket' => $this->bucket]);
             }
+        } catch (\Aws\Auth\Exception\UnresolvedAuthSchemeException $e) {
+            // The AWS SDK bundled with Moodle 5.x throws this when an authentication
+            // scheme (Signature V4) cannot be resolved because credentials are missing
+            // or unresolved (issue #685).
+            $connection->success = false;
+            $connection->details = $this->get_exception_details($e);
         } catch (\Aws\S3\Exception\S3Exception $e) {
             $connection->success = false;
             $connection->details = $this->get_exception_details($e);
@@ -407,19 +440,14 @@ class client extends object_client_base {
     }
 
     /**
-     * get_exception_details
-     * @param \Exception $exception
+     * Build a human-readable detail string from a connection/permission exception.
+     *
+     * @param \Throwable $exception
      *
      * @return string
      */
-    protected function get_exception_details($exception) {
+    protected function get_exception_details(\Throwable $exception) {
         $message = $exception->getMessage();
-
-        if (get_class($exception) !== '\Aws\S3\Exception\S3Exception') {
-            return "Not a S3 exception : $message";
-        }
-
-        $errorcode = $exception->getAwsErrorCode();
 
         $details = ' ';
 
@@ -427,8 +455,13 @@ class client extends object_client_base {
             $details .= "ERROR MSG: " . $message . "\n";
         }
 
-        if ($errorcode) {
-            $details .= "ERROR CODE: " . $errorcode . "\n";
+        // S3 exceptions carry an AWS-specific error code; include it when present.
+        if ($exception instanceof \Aws\S3\Exception\S3Exception) {
+            $errorcode = $exception->getAwsErrorCode();
+
+            if ($errorcode) {
+                $details .= "ERROR CODE: " . $errorcode . "\n";
+            }
         }
 
         return $details;

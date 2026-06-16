@@ -75,6 +75,32 @@ final class clients_test extends \advanced_testcase {
     }
 
     /**
+     * The exception detail builder must surface the message for any throwable —
+     * including the AWS SDK's UnresolvedAuthSchemeException — instead of hiding it
+     * behind a "Not a S3 exception" placeholder. Regression test for the settings
+     * page error display, see https://github.com/catalyst/moodle-tool_objectfs/issues/685
+     *
+     * @covers \tool_objectfs\local\store\s3\client::get_exception_details
+     */
+    public function test_s3_client_get_exception_details_surfaces_message(): void {
+        $s3client = new s3client([]);
+
+        $method = new \ReflectionMethod($s3client, 'get_exception_details');
+        $method->setAccessible(true);
+
+        // A plain throwable: the message must be surfaced, not discarded.
+        $details = $method->invoke($s3client, new \Exception('boom message'));
+        $this->assertStringContainsString('boom message', $details);
+        $this->assertStringNotContainsString('Not a S3 exception', $details);
+
+        // The auth scheme exception thrown by the Moodle 5.x AWS SDK (issue #685).
+        $authexception = new \Aws\Auth\Exception\UnresolvedAuthSchemeException(
+            'Could not resolve an authentication scheme: Signature V4 requires AWS credentials');
+        $details = $method->invoke($s3client, $authexception);
+        $this->assertStringContainsString('Signature V4 requires AWS credentials', $details);
+    }
+
+    /**
      * Data provider for testing digitalocean client connection.
      *
      * @return \array[][]
