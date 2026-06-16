@@ -540,7 +540,7 @@ git format-patch MOODLE_28_STABLE --stdout > core28.diff
 git format-patch MOODLE_27_STABLE --stdout > core27.diff
 </pre>
 
-TODO: Watch and add steps for these trackers when they are integrated: MDL-57971
+Pending: Watch and add steps for these trackers when they are integrated: MDL-57971
 
 ### PHPUnit test compatibility
 The file system API patch introduces tests that use:

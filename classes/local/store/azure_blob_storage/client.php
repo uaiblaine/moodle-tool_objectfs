@@ -40,7 +40,7 @@ class client extends object_client_base {
 
     /**
      * Creates object client
-     * @param stdClass $config / TODO is this maybe null ?
+     * @param stdClass $config The client configuration (may be empty/null).
      */
     public function __construct($config) {
         if (empty($config) || !$this->get_availability()) {

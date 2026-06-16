@@ -94,8 +94,8 @@ final class clients_test extends \advanced_testcase {
         $this->assertStringNotContainsString('Not a S3 exception', $details);
 
         // The auth scheme exception thrown by the Moodle 5.x AWS SDK (issue #685).
-        $authexception = new \Aws\Auth\Exception\UnresolvedAuthSchemeException(
-            'Could not resolve an authentication scheme: Signature V4 requires AWS credentials');
+        $message = 'Could not resolve an authentication scheme: Signature V4 requires AWS credentials';
+        $authexception = new \Aws\Auth\Exception\UnresolvedAuthSchemeException($message);
         $details = $method->invoke($s3client, $authexception);
         $this->assertStringContainsString('Signature V4 requires AWS credentials', $details);
     }
