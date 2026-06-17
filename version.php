@@ -25,8 +25,8 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$plugin->version   = 2026061601;
-$plugin->release   = 2026061601;
+$plugin->version   = 2026061603;
+$plugin->release   = 2026061603;
 $plugin->requires  = 2025100600;
 $plugin->component = "tool_objectfs";
 $plugin->maturity  = MATURITY_STABLE;
