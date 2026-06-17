@@ -18,6 +18,7 @@ namespace tool_objectfs\local\object_manipulator;
 
 use tool_objectfs\local\manager;
 use tool_objectfs\local\object_manipulator\candidates\candidates_finder;
+use tool_objectfs\local\object_manipulator\candidates\candidates_cursor;
 
 /**
  * Tests for object orphaner.
@@ -123,5 +124,46 @@ final class orphaner_test extends \tool_objectfs\tests\testcase {
         $this->assertEquals(OBJECT_LOCATION_ORPHANED, $location1);
         $this->assertEquals(OBJECT_LOCATION_ORPHANED, $location2);
         $this->assertEquals(OBJECT_LOCATION_ORPHANED, $location3);
+    }
+
+    public function test_orphaner_keyset_pages_through_all_candidates(): void {
+        global $DB;
+
+        // Create objects then break their {files} link so each becomes an orphaner candidate.
+        $expected = [];
+        for ($i = 0; $i < 5; $i++) {
+            $object = $this->create_local_object("orphan keyset $i");
+            $DB->set_field('files', 'contenthash', "missing$i", ['contenthash' => $object->contenthash]);
+            $id = (int) $DB->get_field('tool_objectfs_objects', 'id', ['contenthash' => $object->contenthash]);
+            $expected[$id] = true;
+        }
+
+        // Force a small batch so the keyset cursor pages across runs.
+        $config = manager::get_objectfs_config();
+        $config->filesystem = get_class($this->filesystem);
+        $config->batchsize = 2;
+        $finder = new candidates_finder($this->manipulator, $config);
+
+        $seen = [];
+        $pages = 0;
+        do {
+            $batch = $finder->get();
+            $pages++;
+            $this->assertLessThanOrEqual(2, count($batch));
+            foreach ($batch as $id => $record) {
+                // No object id is returned on more than one page.
+                $this->assertArrayNotHasKey($id, $seen);
+                $seen[$id] = true;
+            }
+        } while (count($batch) === 2);
+
+        // Paging actually happened, and every candidate was found exactly once.
+        $this->assertGreaterThan(1, $pages);
+        foreach (array_keys($expected) as $id) {
+            $this->assertArrayHasKey($id, $seen);
+        }
+
+        // The pass completed, so the cursor reset to the start sentinel.
+        $this->assertSame('0', (new candidates_cursor('orphaner_lastid', '0'))->get());
     }
 }

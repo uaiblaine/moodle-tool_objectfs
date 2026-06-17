@@ -43,7 +43,9 @@ class orphaner_candidates extends manipulator_candidates_base {
                   FROM {tool_objectfs_objects} o
              LEFT JOIN {files} f ON o.contenthash = f.contenthash
                  WHERE f.id is null
-                   AND o.location != :location';
+                   AND o.location != :location
+                   AND o.id > :cursor
+              ORDER BY o.id ASC';
     }
 
     /**
@@ -53,6 +55,34 @@ class orphaner_candidates extends manipulator_candidates_base {
     public function get_candidates_sql_params() {
         return [
           'location' => OBJECT_LOCATION_ORPHANED,
+          'cursor' => 0,
         ];
+    }
+
+    /**
+     * Fetches one keyset-paginated batch and advances the persisted cursor.
+     *
+     * Seeks {tool_objectfs_objects} by primary key from the stored cursor, so
+     * each run is a bounded PK range instead of a full table scan. The cursor
+     * resets at the end of a pass so time-capped rows are rediscovered.
+     *
+     * @return array
+     */
+    public function get() {
+        $cursor = new candidates_cursor('orphaner_lastid', '0');
+        $params = $this->get_candidates_sql_params();
+        $params['cursor'] = (int) $cursor->get();
+        $limit = $this->config->batchsize;
+
+        $records = $this->query($params, $limit);
+
+        if (count($records) < $limit) {
+            $cursor->reset();
+        } else {
+            $last = end($records);
+            $cursor->set($last->id);
+        }
+
+        return $records;
     }
 }

@@ -14,20 +14,23 @@
 // You should have received a copy of the GNU General Public License
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
+namespace tool_objectfs;
+
 /**
- * Version information.
+ * Tests for the plugin database schema.
  *
+ * @coversNothing
  * @package   tool_objectfs
- * @author    Kenneth Hendricks <kennethhendricks@catalyst-au.net>
  * @copyright Catalyst IT
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-
-defined('MOODLE_INTERNAL') || die();
-
-$plugin->version   = 2026061601;
-$plugin->release   = 2026061601;
-$plugin->requires  = 2025100600;
-$plugin->component = "tool_objectfs";
-$plugin->maturity  = MATURITY_STABLE;
-$plugin->supported = [501, 502];
+final class db_test extends \advanced_testcase {
+    public function test_objects_location_index_exists(): void {
+        global $DB;
+        $dbman = $DB->get_manager();
+        $table = new \xmldb_table('tool_objectfs_objects');
+        $index = new \xmldb_index('toolobjeobje_locfiltim_ix', XMLDB_INDEX_NOTUNIQUE,
+            ['location', 'filesize', 'timeduplicated']);
+        $this->assertTrue($dbman->index_exists($table, $index));
+    }
+}

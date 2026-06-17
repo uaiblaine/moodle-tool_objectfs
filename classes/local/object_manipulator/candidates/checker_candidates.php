@@ -44,7 +44,9 @@ class checker_candidates extends manipulator_candidates_base {
              LEFT JOIN {tool_objectfs_objects} o ON f.contenthash = o.contenthash
                  WHERE f.filesize > 0
                    AND o.location is NULL
-              GROUP BY f.contenthash';
+                   AND f.contenthash > :cursor
+              GROUP BY f.contenthash
+              ORDER BY f.contenthash ASC';
     }
 
     /**
@@ -52,6 +54,34 @@ class checker_candidates extends manipulator_candidates_base {
      * @return array
      */
     public function get_candidates_sql_params() {
-        return [];
+        return ['cursor' => ''];
+    }
+
+    /**
+     * Fetches one keyset-paginated batch and advances the persisted cursor.
+     *
+     * Scans {files} in contenthash order from the stored cursor, so each run is a
+     * bounded index range instead of a full table scan. When the batch is short
+     * (end of the table), the cursor resets so newly added or time-capped files
+     * are rediscovered on the next pass.
+     *
+     * @return array
+     */
+    public function get() {
+        $cursor = new candidates_cursor('checker_lasthash', '');
+        $params = $this->get_candidates_sql_params();
+        $params['cursor'] = $cursor->get();
+        $limit = $this->config->batchsize;
+
+        $records = $this->query($params, $limit);
+
+        if (count($records) < $limit) {
+            $cursor->reset();
+        } else {
+            $last = end($records);
+            $cursor->set($last->contenthash);
+        }
+
+        return $records;
     }
 }

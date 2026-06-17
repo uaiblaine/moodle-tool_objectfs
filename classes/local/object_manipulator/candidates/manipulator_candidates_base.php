@@ -56,12 +56,22 @@ abstract class manipulator_candidates_base implements manipulator_candidates {
      * @throws dml_exception
      */
     public function get() {
+        return $this->query($this->get_candidates_sql_params(), $this->config->batchsize);
+    }
+
+    /**
+     * Runs the candidate SQL with an offset-0 limit.
+     *
+     * Shared by get() and by keyset-paginated subclasses so the single DB read
+     * site stays in one place.
+     *
+     * @param array $params Query parameters.
+     * @param int $limit Maximum number of rows to fetch.
+     * @return array
+     * @throws dml_exception
+     */
+    protected function query(array $params, int $limit) {
         global $DB;
-        return $DB->get_records_sql(
-            $this->get_candidates_sql(),
-            $this->get_candidates_sql_params(),
-            0,
-            $this->config->batchsize
-        );
+        return $DB->get_records_sql($this->get_candidates_sql(), $params, 0, $limit);
     }
 }

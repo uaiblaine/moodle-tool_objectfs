@@ -17,6 +17,8 @@
 namespace tool_objectfs\local\object_manipulator;
 
 use tool_objectfs\local\manager;
+use tool_objectfs\local\object_manipulator\candidates\candidates_finder;
+use tool_objectfs\local\object_manipulator\candidates\candidates_cursor;
 
 /**
  * Tests for object checker.
@@ -128,5 +130,71 @@ final class checker_test extends \tool_objectfs\tests\testcase {
         $reflection = new \ReflectionMethod(checker::class, "manipulate_object");
         $reflection->setAccessible(true);
         $this->assertEquals(OBJECT_LOCATION_ERROR, $reflection->invokeArgs($this->checker, [$file]));
+    }
+
+    public function test_checker_keyset_pages_through_all_candidates(): void {
+        global $DB;
+
+        // Create several untracked files (no objectfs row) so they are checker candidates.
+        $expected = [];
+        for ($i = 0; $i < 5; $i++) {
+            $object = $this->create_local_object("keyset candidate $i");
+            $expected[$object->contenthash] = true;
+            $DB->delete_records('tool_objectfs_objects', ['contenthash' => $object->contenthash]);
+        }
+
+        // Force a small batch so the keyset cursor pages across runs.
+        $config = manager::get_objectfs_config();
+        $config->filesystem = get_class($this->filesystem);
+        $config->batchsize = 2;
+        $finder = new candidates_finder($this->manipulator, $config);
+
+        // Page until a short batch marks the end of the pass.
+        $seen = [];
+        $pages = 0;
+        do {
+            $batch = $finder->get();
+            $pages++;
+            $this->assertLessThanOrEqual(2, count($batch));
+            foreach ($batch as $hash => $record) {
+                // No contenthash is returned on more than one page.
+                $this->assertArrayNotHasKey($hash, $seen);
+                $seen[$hash] = true;
+            }
+        } while (count($batch) === 2);
+
+        // Paging actually happened, and every candidate was found exactly once.
+        $this->assertGreaterThan(1, $pages);
+        foreach (array_keys($expected) as $hash) {
+            $this->assertArrayHasKey($hash, $seen);
+        }
+
+        // The pass completed, so the cursor reset to the start sentinel.
+        $this->assertSame('', (new candidates_cursor('checker_lasthash', ''))->get());
+    }
+
+    public function test_checker_keyset_resumes_from_cursor(): void {
+        global $DB;
+
+        $hashes = [];
+        for ($i = 0; $i < 4; $i++) {
+            $object = $this->create_local_object("keyset resume $i");
+            $hashes[] = $object->contenthash;
+            $DB->delete_records('tool_objectfs_objects', ['contenthash' => $object->contenthash]);
+        }
+        sort($hashes, SORT_STRING);
+
+        // Seed the cursor at the first hash; the query is exclusive (>).
+        set_config('checker_lasthash', $hashes[0], 'tool_objectfs');
+
+        $config = manager::get_objectfs_config();
+        $config->filesystem = get_class($this->filesystem);
+        $finder = new candidates_finder($this->manipulator, $config);
+        $batch = $finder->get();
+
+        $this->assertArrayNotHasKey($hashes[0], $batch);
+        $this->assertArrayHasKey($hashes[1], $batch);
+        $this->assertArrayHasKey($hashes[2], $batch);
+        $this->assertArrayHasKey($hashes[3], $batch);
     }
 }

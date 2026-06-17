@@ -20,6 +20,7 @@
       </KEYS>
       <INDEXES>
         <INDEX NAME="toolobjeobje_con_idu_ix" UNIQUE="true" FIELDS="contenthash, location"/>
+        <INDEX NAME="toolobjeobje_locfiltim_ix" UNIQUE="false" FIELDS="location, filesize, timeduplicated"/>
       </INDEXES>
     </TABLE>
     <TABLE NAME="tool_objectfs_reports" COMMENT="List of Object reports for objectfs">
