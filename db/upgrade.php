@@ -225,8 +225,7 @@ function xmldb_tool_objectfs_upgrade($oldversion) {
         // push/pull/delete candidate queries seek by location instead of full
         // scanning tool_objectfs_objects on sites with millions of objects.
         $table = new xmldb_table('tool_objectfs_objects');
-        $index = new xmldb_index('toolobjeobje_locfiltim_ix', XMLDB_INDEX_NOTUNIQUE,
-            ['location', 'filesize', 'timeduplicated']);
+        $index = new xmldb_index('toolobjeobje_locfiltim_ix', XMLDB_INDEX_NOTUNIQUE, ['location', 'filesize', 'timeduplicated']);
 
         if (!$dbman->index_exists($table, $index)) {
             $dbman->add_index($table, $index);

@@ -29,8 +29,7 @@ final class db_test extends \advanced_testcase {
         global $DB;
         $dbman = $DB->get_manager();
         $table = new \xmldb_table('tool_objectfs_objects');
-        $index = new \xmldb_index('toolobjeobje_locfiltim_ix', XMLDB_INDEX_NOTUNIQUE,
-            ['location', 'filesize', 'timeduplicated']);
+        $index = new \xmldb_index('toolobjeobje_locfiltim_ix', XMLDB_INDEX_NOTUNIQUE, ['location', 'filesize', 'timeduplicated']);
         $this->assertTrue($dbman->index_exists($table, $index));
     }
 }
