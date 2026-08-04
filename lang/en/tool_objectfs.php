@@ -255,6 +255,8 @@ $string['settings:presignedcloudfronturl:warning'] = 'Before enabling Cloudfront
 $string['settings:presignedurl:coresupport'] = 'Feature is not supported by core, you need to cherry pick: <a href="https://github.com/catalyst/moodle-tool_objectfs#allow-support-for-xsendfile-in-alternative-file-system">xsendfile support</a>';
 $string['settings:presignedurl:deletedsuccess'] = 'Files deleted successfully.';
 $string['settings:presignedurl:deletefiles'] = 'Delete test files.';
+$string['settings:presignedurl:disallowfileareas'] = 'Disallow file areas for Pre-Signed URL redirects';
+$string['settings:presignedurl:disallowfileareas_help'] = 'One entry per line in the format component|filearea. Matching files will never redirect to Pre-Signed URLs.';
 $string['settings:presignedurl:enablepresigneds3urls'] = 'S3 Pre-Signed URLs';
 $string['settings:presignedurl:enablepresigneds3urls_help'] = 'Enable Pre-Signed S3 URLs to request content directly from external storage.';
 $string['settings:presignedurl:enablepresignedurls'] = 'Enable Pre-Signed URLs';
