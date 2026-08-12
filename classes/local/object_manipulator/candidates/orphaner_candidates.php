@@ -76,7 +76,7 @@ class orphaner_candidates extends manipulator_candidates_base {
 
         $records = $this->query($params, $limit);
 
-        if (count($records) < $limit) {
+        if ($limit <= 0 || count($records) < $limit) {
             $cursor->reset();
         } else {
             $last = end($records);

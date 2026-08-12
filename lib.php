@@ -114,11 +114,9 @@ function tool_objectfs_status_checks() {
         new tool_objectfs\check\connection(),
     ];
     if (get_config('tool_objectfs', 'taggingenabled') == '1') {
-        $checks += [
-            new tool_objectfs\check\tagging_status(),
-            new tool_objectfs\check\tagging_sync_status(),
-            new tool_objectfs\check\tagging_migration_status(),
-        ];
+        $checks[] = new tool_objectfs\check\tagging_status();
+        $checks[] = new tool_objectfs\check\tagging_sync_status();
+        $checks[] = new tool_objectfs\check\tagging_migration_status();
     }
 
     if (get_config('tool_objectfs', 'proxyrangerequests')) {

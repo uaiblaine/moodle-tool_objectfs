@@ -166,4 +166,24 @@ final class orphaner_test extends \tool_objectfs\tests\testcase {
         // The pass completed, so the cursor reset to the start sentinel.
         $this->assertSame('0', (new candidates_cursor('orphaner_lastid', '0'))->get());
     }
+
+    public function test_orphaner_zero_batchsize_resets_cursor(): void {
+        global $DB;
+
+        // With no candidates, batchsize 0 (DML "no limit") must not corrupt the cursor.
+        $config = manager::get_objectfs_config();
+        $config->filesystem = get_class($this->filesystem);
+        $config->batchsize = 0;
+        $finder = new candidates_finder($this->manipulator, $config);
+        $this->assertCount(0, $finder->get());
+        $this->assertSame('0', (new candidates_cursor('orphaner_lastid', '0'))->get());
+
+        // With candidates present, batchsize 0 returns them all in one unbounded
+        // pass, so the cursor must reset rather than advance past the last row.
+        $object = $this->create_local_object('orphan zero batch');
+        $DB->set_field('files', 'contenthash', 'missingzero', ['contenthash' => $object->contenthash]);
+
+        $this->assertCount(1, $finder->get());
+        $this->assertSame('0', (new candidates_cursor('orphaner_lastid', '0'))->get());
+    }
 }
