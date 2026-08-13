@@ -60,29 +60,34 @@ class orphaner_candidates extends manipulator_candidates_base {
     }
 
     /**
-     * Fetches one keyset-paginated batch and advances the persisted cursor.
+     * Fetches one keyset-paginated batch; commit_cursor() persists the cursor
+     * once the batch outcome is known.
      *
-     * Seeks {tool_objectfs_objects} by primary key from the stored cursor, so
-     * each run is a bounded PK range instead of a full table scan. The cursor
-     * resets at the end of a pass so time-capped rows are rediscovered.
+     * Seeks {tool_objectfs_objects} by primary key from the stored cursor. The
+     * seek only bounds the scan while at least a full batch of candidates
+     * remains ahead of the cursor; when candidates are sparse the anti-join
+     * still scans to the end of the table before returning a short batch,
+     * which completes the pass so new orphans are rediscovered on the next one.
      *
      * @return array
      */
     public function get() {
-        $cursor = new candidates_cursor('orphaner_lastid', '0');
+        $this->cursor = new candidates_cursor('orphaner_lastid', '0');
         $params = $this->get_candidates_sql_params();
-        $params['cursor'] = (int) $cursor->get();
-        $limit = $this->config->batchsize;
+        $params['cursor'] = (int) $this->cursor->get();
+        $this->lastlimit = (int) $this->config->batchsize;
+        $this->lastbatch = $this->query($params, $this->lastlimit);
 
-        $records = $this->query($params, $limit);
+        return $this->lastbatch;
+    }
 
-        if ($limit <= 0 || count($records) < $limit) {
-            $cursor->reset();
-        } else {
-            $last = end($records);
-            $cursor->set($last->id);
-        }
-
-        return $records;
+    /**
+     * Returns the keyset cursor key of a candidate record.
+     *
+     * @param \stdClass $record Candidate record.
+     * @return int
+     */
+    protected function cursor_key(\stdClass $record) {
+        return $record->id;
     }
 }

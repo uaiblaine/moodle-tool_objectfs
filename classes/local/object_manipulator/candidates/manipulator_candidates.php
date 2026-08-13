@@ -53,4 +53,14 @@ interface manipulator_candidates {
      * @throws dml_exception
      */
     public function get();
+
+    /**
+     * Persists the keyset cursor once the fate of the last fetched batch is known.
+     *
+     * No-op for finders without a keyset cursor.
+     *
+     * @param int $processedcount Number of records the manipulator reached.
+     * @return void
+     */
+    public function commit_cursor(int $processedcount): void;
 }

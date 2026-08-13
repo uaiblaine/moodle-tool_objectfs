@@ -58,30 +58,34 @@ class checker_candidates extends manipulator_candidates_base {
     }
 
     /**
-     * Fetches one keyset-paginated batch and advances the persisted cursor.
+     * Fetches one keyset-paginated batch; commit_cursor() persists the cursor
+     * once the batch outcome is known.
      *
-     * Scans {files} in contenthash order from the stored cursor, so each run is a
-     * bounded index range instead of a full table scan. When the batch is short
-     * (end of the table), the cursor resets so newly added or time-capped files
-     * are rediscovered on the next pass.
+     * Scans {files} in contenthash order from the stored cursor. The seek only
+     * bounds the scan while at least a full batch of candidates remains ahead
+     * of the cursor; when candidates are sparse the anti-join still scans to
+     * the end of the table before returning a short batch, which completes the
+     * pass so newly added or retried files are rediscovered on the next one.
      *
      * @return array
      */
     public function get() {
-        $cursor = new candidates_cursor('checker_lasthash', '');
+        $this->cursor = new candidates_cursor('checker_lasthash', '');
         $params = $this->get_candidates_sql_params();
-        $params['cursor'] = $cursor->get();
-        $limit = $this->config->batchsize;
+        $params['cursor'] = $this->cursor->get();
+        $this->lastlimit = (int) $this->config->batchsize;
+        $this->lastbatch = $this->query($params, $this->lastlimit);
 
-        $records = $this->query($params, $limit);
+        return $this->lastbatch;
+    }
 
-        if ($limit <= 0 || count($records) < $limit) {
-            $cursor->reset();
-        } else {
-            $last = end($records);
-            $cursor->set($last->contenthash);
-        }
-
-        return $records;
+    /**
+     * Returns the keyset cursor key of a candidate record.
+     *
+     * @param \stdClass $record Candidate record.
+     * @return string
+     */
+    protected function cursor_key(\stdClass $record) {
+        return $record->contenthash;
     }
 }

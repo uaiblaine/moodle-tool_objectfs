@@ -14,20 +14,24 @@
 // You should have received a copy of the GNU General Public License
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
+namespace tool_objectfs\tests;
+
 /**
- * Version information.
+ * Test file system whose external client always reports as unavailable.
+ *
+ * Used by unit tests to simulate an object store outage.
  *
  * @package   tool_objectfs
- * @author    Kenneth Hendricks <kennethhendricks@catalyst-au.net>
  * @copyright Catalyst IT
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-
-defined('MOODLE_INTERNAL') || die();
-
-$plugin->version   = 2026081202;
-$plugin->release   = 2026081202;
-$plugin->requires  = 2025100600;
-$plugin->component = "tool_objectfs";
-$plugin->maturity  = MATURITY_STABLE;
-$plugin->supported = [501, 502];
+class unavailable_test_file_system extends test_file_system {
+    /**
+     * Reports the external client as unavailable.
+     *
+     * @return bool
+     */
+    public function get_client_availability() {
+        return false;
+    }
+}

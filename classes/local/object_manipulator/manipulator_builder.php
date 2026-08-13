@@ -72,17 +72,31 @@ class manipulator_builder {
      * @throws moodle_exception
      */
     public function execute($manipulator) {
-        $this->build($manipulator);
-        if (empty($this->candidates)) {
+        $this->config = manager::get_objectfs_config();
+
+        if (empty($this->config->filesystem)) {
+            mtrace(get_string('settings:notconfigured', 'tool_objectfs'));
             return;
         }
+
+        // Check availability before fetching candidates: fetching binds the
+        // keyset cursor batch, and an unavailable client must not consume it.
         $filesystem = new $this->config->filesystem();
         if (!$filesystem->get_client_availability()) {
             mtrace(get_string('client_not_available', 'tool_objectfs'));
             return;
         }
-        $manipulator = new $this->manipulatorclass($filesystem, $this->config, $this->logger);
-        $manipulator->execute($this->candidates);
+
+        $this->build($manipulator);
+        if (empty($this->candidates)) {
+            // An empty batch still completes a keyset pass, so commit it.
+            $this->finder->commit_cursor(0);
+            return;
+        }
+
+        $manipulatorinstance = new $this->manipulatorclass($filesystem, $this->config, $this->logger);
+        $processedcount = (int) $manipulatorinstance->execute($this->candidates);
+        $this->finder->commit_cursor($processedcount);
     }
 
     /**
@@ -104,7 +118,6 @@ class manipulator_builder {
      * @throws moodle_exception
      */
     private function build($manipulator) {
-        $this->config = manager::get_objectfs_config();
         $this->manipulatorclass = $manipulator;
         $this->logger = new aggregate_logger();
         $this->finder = new candidates_finder($manipulator, $this->config);

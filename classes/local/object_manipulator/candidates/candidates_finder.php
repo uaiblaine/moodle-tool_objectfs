@@ -59,4 +59,14 @@ class candidates_finder {
     public function get_query_name() {
         return $this->finder->get_query_name();
     }
+
+    /**
+     * Persists the keyset cursor once the fate of the last fetched batch is known.
+     *
+     * @param int $processedcount Number of records the manipulator reached.
+     * @return void
+     */
+    public function commit_cursor(int $processedcount): void {
+        $this->finder->commit_cursor($processedcount);
+    }
 }

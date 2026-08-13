@@ -28,8 +28,9 @@ namespace tool_objectfs\local\object_manipulator\candidates;
  * Persisted keyset (seek) cursor for candidate queries.
  *
  * Mirrors the resume pattern already used by the reconcile_filedir task: the
- * cursor is read at the start of a batch, advanced to the last fetched key, and
- * reset to a start sentinel once a full pass completes so newly added rows are
+ * cursor is read at the start of a batch, advanced to the last key the
+ * manipulator actually reached once the batch outcome is known, and reset to a
+ * start sentinel once a full pass completes so newly added rows are
  * rediscovered on the next pass. The value lives in plugin config (no extra
  * table), just like 'reconcile_file_lasthash'.
  */

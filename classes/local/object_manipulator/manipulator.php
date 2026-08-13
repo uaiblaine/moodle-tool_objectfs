@@ -84,27 +84,41 @@ abstract class manipulator implements object_manipulator {
     }
 
     /**
-     * execute
+     * Processes the candidate records and returns how many were reached.
+     *
+     * A record counts as reached once the loop attempted it: manipulated, or
+     * skipped because another process holds its lock. Records left after a
+     * time-cap break are not reached, so the caller can offer them again on
+     * the next run (see candidates commit_cursor()). A trailing run of failed
+     * records is also reported as unreached — a mid-run storage outage fails
+     * every remaining record, and they must be retried rather than skipped —
+     * unless the whole batch failed: then everything counts as reached, so a
+     * persistently failing object can never stall the cursor.
+     *
      * @param array $objectrecords
-     * @return mixed|void
+     * @return int Number of records reached.
      * @throws dml_exception
      */
     public function execute(array $objectrecords) {
         if (!$this->manipulator_can_execute()) {
             mtrace('Objectfs manipulator exiting early');
-            return;
+            return 0;
         }
         $this->logger->start_timing();
 
+        $reached = 0;
+        $lastok = 0;
         foreach ($objectrecords as $objectrecord) {
             if (time() >= $this->finishtime) {
                 break;
             }
+            $reached++;
 
             $objectlock = $this->filesystem->acquire_object_lock($objectrecord->contenthash);
 
             // Object is currently being manipulated elsewhere.
             if (!$objectlock) {
+                $lastok = $reached;
                 continue;
             }
 
@@ -115,6 +129,7 @@ abstract class manipulator implements object_manipulator {
                 } else {
                     manager::update_object_by_hash($objectrecord->contenthash, $newlocation);
                 }
+                $lastok = $reached;
             } catch (\Exception $e) {
                 // Transient storage errors (e.g. S3 connectivity blip) must not abort
                 // the entire batch — log and continue with the next object.
@@ -128,6 +143,14 @@ abstract class manipulator implements object_manipulator {
 
         $this->logger->end_timing();
         $this->logger->output_move_statistics();
+
+        // Report a trailing run of failures as unreached so it is retried next
+        // run, but never an entirely failed batch — that must advance in full
+        // to guarantee forward progress past persistently failing objects.
+        if ($lastok > 0) {
+            return $lastok;
+        }
+        return $reached;
     }
 
     /**

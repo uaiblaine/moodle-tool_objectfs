@@ -148,6 +148,7 @@ final class orphaner_test extends \tool_objectfs\tests\testcase {
         $pages = 0;
         do {
             $batch = $finder->get();
+            $finder->commit_cursor(count($batch));
             $pages++;
             $this->assertLessThanOrEqual(2, count($batch));
             foreach ($batch as $id => $record) {
@@ -175,7 +176,9 @@ final class orphaner_test extends \tool_objectfs\tests\testcase {
         $config->filesystem = get_class($this->filesystem);
         $config->batchsize = 0;
         $finder = new candidates_finder($this->manipulator, $config);
-        $this->assertCount(0, $finder->get());
+        $batch = $finder->get();
+        $finder->commit_cursor(count($batch));
+        $this->assertCount(0, $batch);
         $this->assertSame('0', (new candidates_cursor('orphaner_lastid', '0'))->get());
 
         // With candidates present, batchsize 0 returns them all in one unbounded
@@ -183,7 +186,114 @@ final class orphaner_test extends \tool_objectfs\tests\testcase {
         $object = $this->create_local_object('orphan zero batch');
         $DB->set_field('files', 'contenthash', 'missingzero', ['contenthash' => $object->contenthash]);
 
-        $this->assertCount(1, $finder->get());
+        $batch = $finder->get();
+        $finder->commit_cursor(count($batch));
+        $this->assertCount(1, $batch);
         $this->assertSame('0', (new candidates_cursor('orphaner_lastid', '0'))->get());
+    }
+
+    public function test_orphaner_cursor_advances_only_over_reached_records(): void {
+        global $DB;
+
+        // Three candidates, batchsize 3: a full batch.
+        $ids = [];
+        for ($i = 0; $i < 3; $i++) {
+            $object = $this->create_local_object("orphan partial $i");
+            $DB->set_field('files', 'contenthash', "missingpartial$i", ['contenthash' => $object->contenthash]);
+            $ids[] = (int) $DB->get_field('tool_objectfs_objects', 'id', ['contenthash' => $object->contenthash]);
+        }
+        sort($ids);
+
+        $config = manager::get_objectfs_config();
+        $config->filesystem = get_class($this->filesystem);
+        $config->batchsize = 3;
+        $finder = new candidates_finder($this->manipulator, $config);
+
+        // Fetching alone must not move the cursor.
+        $batch = $finder->get();
+        $this->assertCount(3, $batch);
+        $this->assertSame('0', (new candidates_cursor('orphaner_lastid', '0'))->get());
+
+        // Only two of the three were reached: resume at the second record.
+        $finder->commit_cursor(2);
+        $this->assertEquals($ids[1], (new candidates_cursor('orphaner_lastid', '0'))->get());
+
+        // The next batch offers exactly the unreached remainder.
+        $batch = $finder->get();
+        $this->assertSame([$ids[2]], array_map('intval', array_keys($batch)));
+
+        // A fully reached short batch completes the pass and resets the cursor.
+        $finder->commit_cursor(count($batch));
+        $this->assertSame('0', (new candidates_cursor('orphaner_lastid', '0'))->get());
+    }
+
+    public function test_orphaner_outage_does_not_advance_cursor(): void {
+        global $DB;
+
+        // A dummy object pins a non-sentinel cursor position below the candidate.
+        $dummy = $this->create_local_object('orphan outage dummy');
+        $dummyid = (int) $DB->get_field('tool_objectfs_objects', 'id', ['contenthash' => $dummy->contenthash]);
+        $object = $this->create_local_object('orphan outage');
+        $DB->set_field('files', 'contenthash', 'missingoutage', ['contenthash' => $object->contenthash]);
+        set_config('orphaner_lastid', (string) $dummyid, 'tool_objectfs');
+
+        // Batchsize 1 makes the batch full, so a wrongly consumed batch would
+        // advance the cursor and a wrongly committed pass would reset it —
+        // either way it would leave the seeded value.
+        $config = manager::get_objectfs_config();
+        $config->filesystem = \tool_objectfs\tests\unavailable_test_file_system::class;
+        $config->batchsize = 1;
+        manager::set_objectfs_config($config);
+
+        // The object store is unavailable: the run must not consume the batch.
+        (new manipulator_builder())->execute($this->manipulator);
+
+        $this->assertSame((string) $dummyid, (new candidates_cursor('orphaner_lastid', '0'))->get());
+        $location = $DB->get_field('tool_objectfs_objects', 'location', ['contenthash' => $object->contenthash]);
+        $this->assertNotEquals(OBJECT_LOCATION_ORPHANED, $location);
+
+        // Control: with the store available the same run consumes the batch,
+        // proving the outage was the only thing standing in the way.
+        $config->filesystem = get_class($this->filesystem);
+        manager::set_objectfs_config($config);
+
+        (new manipulator_builder())->execute($this->manipulator);
+
+        $location = $DB->get_field('tool_objectfs_objects', 'location', ['contenthash' => $object->contenthash]);
+        $this->assertEquals(OBJECT_LOCATION_ORPHANED, $location);
+    }
+
+    public function test_orphaner_time_capped_run_retries_batch_next_run(): void {
+        global $DB;
+
+        $object = $this->create_local_object('orphan time cap');
+        $DB->set_field('files', 'contenthash', 'missingtimecap', ['contenthash' => $object->contenthash]);
+        $objectid = (int) $DB->get_field('tool_objectfs_objects', 'id', ['contenthash' => $object->contenthash]);
+
+        // Batchsize 1 makes the batch full: committing anything other than the
+        // true reached count of zero would advance the cursor to the candidate.
+        $config = manager::get_objectfs_config();
+        $config->filesystem = get_class($this->filesystem);
+        $config->batchsize = 1;
+        $config->maxtaskruntime = 0;
+        manager::set_objectfs_config($config);
+
+        // A zero time budget reaches no record: the batch must stay available.
+        (new manipulator_builder())->execute($this->manipulator);
+
+        $this->assertSame('0', (new candidates_cursor('orphaner_lastid', '0'))->get());
+        $location = $DB->get_field('tool_objectfs_objects', 'location', ['contenthash' => $object->contenthash]);
+        $this->assertNotEquals(OBJECT_LOCATION_ORPHANED, $location);
+
+        // With a normal time budget the retried batch is processed, and the
+        // fully reached full batch advances the cursor to the candidate.
+        $config->maxtaskruntime = MINSECS;
+        manager::set_objectfs_config($config);
+
+        (new manipulator_builder())->execute($this->manipulator);
+
+        $location = $DB->get_field('tool_objectfs_objects', 'location', ['contenthash' => $object->contenthash]);
+        $this->assertEquals(OBJECT_LOCATION_ORPHANED, $location);
+        $this->assertEquals($objectid, (new candidates_cursor('orphaner_lastid', '0'))->get());
     }
 }

@@ -154,6 +154,7 @@ final class checker_test extends \tool_objectfs\tests\testcase {
         $pages = 0;
         do {
             $batch = $finder->get();
+            $finder->commit_cursor(count($batch));
             $pages++;
             $this->assertLessThanOrEqual(2, count($batch));
             foreach ($batch as $hash => $record) {
@@ -176,19 +177,26 @@ final class checker_test extends \tool_objectfs\tests\testcase {
     public function test_checker_keyset_resumes_from_cursor(): void {
         global $DB;
 
+        // Rename the candidate hashes so they sort after every ambient file of
+        // the test site (hex sha1s), keeping the batches below deterministic.
         $hashes = [];
         for ($i = 0; $i < 4; $i++) {
             $object = $this->create_local_object("keyset resume $i");
-            $hashes[] = $object->contenthash;
             $DB->delete_records('tool_objectfs_objects', ['contenthash' => $object->contenthash]);
+            $hash = "zzzresume$i";
+            $DB->set_field('files', 'contenthash', $hash, ['contenthash' => $object->contenthash]);
+            $hashes[] = $hash;
         }
         sort($hashes, SORT_STRING);
 
         // Seed the cursor at the first hash; the query is exclusive (>).
         set_config('checker_lasthash', $hashes[0], 'tool_objectfs');
 
+        // Batchsize 3 makes the fetched batch full, so a fetch that wrongly
+        // persisted the cursor would be observable below.
         $config = manager::get_objectfs_config();
         $config->filesystem = get_class($this->filesystem);
+        $config->batchsize = 3;
         $finder = new candidates_finder($this->manipulator, $config);
         $batch = $finder->get();
 
@@ -196,5 +204,19 @@ final class checker_test extends \tool_objectfs\tests\testcase {
         $this->assertArrayHasKey($hashes[1], $batch);
         $this->assertArrayHasKey($hashes[2], $batch);
         $this->assertArrayHasKey($hashes[3], $batch);
+
+        // Fetching alone must not move the cursor.
+        $this->assertSame($hashes[0], (new candidates_cursor('checker_lasthash', ''))->get());
+
+        // Only two of the three were reached: resume at the second record.
+        $finder->commit_cursor(2);
+        $this->assertSame($hashes[2], (new candidates_cursor('checker_lasthash', ''))->get());
+
+        // The next batch offers exactly the unreached remainder, and a fully
+        // reached short batch completes the pass and resets the cursor.
+        $batch = $finder->get();
+        $this->assertSame([$hashes[3]], array_keys($batch));
+        $finder->commit_cursor(count($batch));
+        $this->assertSame('', (new candidates_cursor('checker_lasthash', ''))->get());
     }
 }
