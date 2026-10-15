@@ -234,5 +234,15 @@ function xmldb_tool_objectfs_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026061601, 'tool', 'objectfs');
     }
 
+    if ($oldversion < 2026101501) {
+        // The orphan grace period now counts from the moment of orphaning (timeduplicated is restamped when a row
+        // becomes orphaned). Rows orphaned before this upgrade get the upgrade time as their orphaning time, or the
+        // next delete_orphaned_object_metadata run would treat the whole backlog as long expired.
+        require_once(__DIR__ . '/../lib.php');
+        $DB->set_field('tool_objectfs_objects', 'timeduplicated', time(), ['location' => OBJECT_LOCATION_ORPHANED]);
+
+        upgrade_plugin_savepoint(true, 2026101501, 'tool', 'objectfs');
+    }
+
     return true;
 }

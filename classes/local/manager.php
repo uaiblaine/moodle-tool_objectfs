@@ -191,6 +191,18 @@ class manager {
             $object->timeduplicated = time();
         }
 
+        // The orphan grace period (maxorphanedage) counts from the moment of orphaning, not from the last
+        // duplication, so timeduplicated is restamped on the first transition to orphaned only.
+        if ($newlocation === OBJECT_LOCATION_ORPHANED) {
+            $storedlocation = null;
+            if (!empty($object->id)) {
+                $storedlocation = $DB->get_field('tool_objectfs_objects', 'location', ['id' => $object->id]);
+            }
+            if ($storedlocation === null || (int)$storedlocation !== OBJECT_LOCATION_ORPHANED) {
+                $object->timeduplicated = time();
+            }
+        }
+
         $locationchanged = !isset($object->location) || $object->location != $newlocation;
         $object->location = $newlocation;
 

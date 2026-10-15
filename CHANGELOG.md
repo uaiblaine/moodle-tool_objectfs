@@ -19,6 +19,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Release names follow `<upstream release>+uai.<N>`; `$plugin->version` follows upstream's date scheme.
 - CI: one MAH job for `MOODLE_503_STABLE`.
 
+### Fixed
+
+- The deleter no longer unlinks the local copy unless the external object has the same size as the local file
+  and the recorded size (a wrong object at the key could destroy the only good copy).
+- The orphan grace period (`maxorphanedage`) counts from the moment of orphaning, not from the last
+  duplication; the upgrade stamps existing orphaned rows with the upgrade time. The metadata-only removal no
+  longer deletes a row whose content hash still has a `{files}` row.
+- `reconcile_filedir` skips files of unknown age and never removes a file younger than one day.
+- The S3 range-request proxy verifies TLS again, and its failure message no longer includes the signed query string.
+- The tag-migration task status badge renders on Bootstrap 5.
+- With external deletion set to full, orphans past the grace period also lose their remote object (upstream
+  #693, ported ahead of its merge).
+- `mutations/gates.conf`: mutation spec holding each fork guard to the test written for it.
+
 ### Added
 
 - `FORK.md` (branch model, sync procedure, patch ledger), `CLAUDE.md`, `COPYING.txt`, `phpcs.xml`.

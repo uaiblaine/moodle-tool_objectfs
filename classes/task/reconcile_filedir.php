@@ -250,18 +250,13 @@ class reconcile_filedir extends task {
 
                     // Not referenced, safe to delete.
                     if (!$fileexists && get_config('tool_objectfs', 'deletelocal')) {
-                        // File younger than configured duration, skip.
-                        $minage = (int)get_config('tool_objectfs', 'minorphanedage');
-                        if ($minage > 0) {
-                            $filemtime = filemtime($fullpath);
-
-                            if ($filemtime !== false) {
-                                $ageinseconds = time() - $filemtime;
-                                if ($ageinseconds < $minage) {
-                                    $skipped++;
-                                    continue;
-                                }
-                            }
+                        // File younger than the configured duration, or of unknown age, skip. The floor of one day
+                        // protects uploads in flight even when minorphanedage is set lower or to 0.
+                        $minage = max(DAYSECS, (int)get_config('tool_objectfs', 'minorphanedage'));
+                        $filemtime = filemtime($fullpath);
+                        if ($filemtime === false || (time() - $filemtime) < $minage) {
+                            $skipped++;
+                            continue;
                         }
 
                         if (!@unlink($fullpath)) {

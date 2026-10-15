@@ -450,10 +450,26 @@ abstract class object_file_system extends \file_system_filedir {
         if ($initiallocation === OBJECT_LOCATION_DUPLICATED) {
             $localpath = $this->get_local_path_from_hash($contenthash);
             if ($this->verify_external_object_from_hash($contenthash)) {
-                $success = unlink($localpath);
+                // The existence check above proves nothing about the content: a foreign or corrupt object at the
+                // key would make this unlink destroy the only good copy. Every store's stream wrapper stats the size.
+                $externalpath = $this->get_external_path_from_hash($contenthash);
+                clearstatcache(true, $localpath);
+                clearstatcache(true, $externalpath);
+                $localsize = @filesize($localpath);
+                $externalsize = @filesize($externalpath);
+                $sizesmatch = $localsize !== false && $externalsize !== false && $localsize === $externalsize &&
+                    ((int)$objectsize <= 0 || (int)$objectsize === $externalsize);
 
-                if ($success) {
-                    $finallocation = OBJECT_LOCATION_EXTERNAL;
+                if ($sizesmatch) {
+                    $success = unlink($localpath);
+
+                    if ($success) {
+                        $finallocation = OBJECT_LOCATION_EXTERNAL;
+                    }
+                } else {
+                    mtrace("ObjectFS: not deleting local copy of $contenthash, size mismatch (local " .
+                        var_export($localsize, true) . ', external ' . var_export($externalsize, true) .
+                        ', expected ' . (int)$objectsize . ').');
                 }
             }
         }
