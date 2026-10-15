@@ -233,19 +233,73 @@ final class object_file_system_test extends tests\testcase {
         $this->assertEquals(OBJECT_LOCATION_ERROR, $location);
     }
 
-    public function test_delete_object_from_local_by_hash_if_can_verify_external_object(): void {
+    /**
+     * An external object of the wrong size must never cause the local copy to be unlinked.
+     */
+    public function test_delete_object_from_local_by_hash_keeps_local_when_external_size_differs(): void {
         $file = $this->create_duplicated_file();
         $contenthash = $file->get_contenthash();
         $externalpath = $this->get_external_path_from_hash($contenthash);
         $localpath = $this->get_local_path_from_storedfile($file);
 
-        $differentfilepath = __DIR__ . '/fixtures/test.txt';
-        copy($differentfilepath, $externalpath);
+        copy(__DIR__ . '/fixtures/test.txt', $externalpath);
+        $this->assertNotEquals(filesize($localpath), filesize($externalpath));
 
+        $this->expectOutputRegex('/size mismatch/');
         $location = $this->filesystem->delete_object_from_local_by_hash($contenthash);
 
+        $this->assertEquals(OBJECT_LOCATION_DUPLICATED, $location);
+        $this->assertTrue(is_readable($localpath));
+    }
+
+    /**
+     * A recorded size that disagrees with the files also keeps the local copy; the matching size deletes it (control).
+     */
+    public function test_delete_object_from_local_by_hash_compares_the_recorded_size(): void {
+        $file = $this->create_duplicated_file();
+        $contenthash = $file->get_contenthash();
+        $localpath = $this->get_local_path_from_storedfile($file);
+        $size = filesize($localpath);
+
+        $this->expectOutputRegex('/size mismatch/');
+        $location = $this->filesystem->delete_object_from_local_by_hash($contenthash, $size + 1);
+        $this->assertEquals(OBJECT_LOCATION_DUPLICATED, $location);
+        $this->assertTrue(is_readable($localpath));
+
+        $location = $this->filesystem->delete_object_from_local_by_hash($contenthash, $size);
         $this->assertEquals(OBJECT_LOCATION_EXTERNAL, $location);
         $this->assertFalse(is_readable($localpath));
+    }
+
+    /**
+     * Failure to build the proxied range request must not leak the signed query string.
+     */
+    public function test_proxy_range_request_failure_does_not_expose_the_signed_query(): void {
+        $client = $this->getMockBuilder(\tool_objectfs\local\store\s3\client::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['curl_range_request_to_presigned_url'])
+            ->getMock();
+        $client->method('curl_range_request_to_presigned_url')->willReturn([
+            'responseheaders' => ['HTTP/1.1 403 Forbidden'],
+            'content' => 'denied',
+            'url' => 'https://bucket.example.com/aa/bb/hash?X-Amz-Signature=SECRET&X-Amz-Credential=KEY',
+        ]);
+        $config = new \stdClass();
+        $config->proxyrangerequests = 1;
+        $property = new \ReflectionProperty($client, 'config');
+        $property->setValue($client, $config);
+        $file = $this->getMockBuilder(\stored_file::class)->disableOriginalConstructor()->getMock();
+        $file->method('get_filesize')->willReturn(3 * 1024 * 1024);
+        $file->method('get_contenthash')->willReturn(sha1('x'));
+
+        try {
+            $client->proxy_range_request($file, (object)['rangefrom' => 0, 'rangeto' => 9, 'length' => 10]);
+            $this->fail('A failed range request must throw.');
+        } catch (\file_exception $e) {
+            $this->assertStringContainsString('https://bucket.example.com/aa/bb/hash', $e->getMessage());
+            $this->assertStringNotContainsString('SECRET', $e->getMessage());
+            $this->assertStringNotContainsString('X-Amz', $e->getMessage());
+        }
     }
 
     /**

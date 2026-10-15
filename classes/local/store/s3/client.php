@@ -856,7 +856,9 @@ class client extends object_client_base {
             echo $response['content'];
             die;
         } else {
-            throw new \file_exception('Range request to URL ' . $response['url'] .
+            // The query string carries the signature and credential: keep scheme, host and path only.
+            $safeurl = strtok($response['url'], '?');
+            throw new \file_exception('Range request to URL ' . $safeurl .
                 ' failed with HTTP code: ' . $httpcode . '. Details: ' . $response['content']);
         }
     }
@@ -883,7 +885,6 @@ class client extends object_client_base {
         $curl = new \curl();
         $curl->setopt(['CURLOPT_HTTP_VERSION' => CURL_HTTP_VERSION_1_1]);
         $curl->setopt(['CURLOPT_RETURNTRANSFER' => true]);
-        $curl->setopt(['CURLOPT_SSL_VERIFYPEER' => false]);
         $curl->setopt(['CURLOPT_CONNECTTIMEOUT' => 15]);
         $curl->setopt(['CURLOPT_TIMEOUT' => 15]);
         $curl->setHeader($headers);

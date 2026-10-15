@@ -43,13 +43,13 @@ class update_object_tags extends adhoc_task {
 
         if ($this->get_fail_delay() > 0) {
             $identifier = 'failing';
-            $class = 'badge-warning';
+            $class = 'bg-warning text-dark';
         } else if (!is_null($this->get_timestarted()) && $this->get_timestarted() > 0) {
             $identifier = 'running';
-            $class = 'badge-info';
+            $class = 'bg-info text-white';
         } else {
             $identifier = 'waiting';
-            $class = 'badge-info';
+            $class = 'bg-info text-white';
         }
 
         return html_writer::span(get_string('status:' . $identifier, 'tool_objectfs', $this->get_fail_delay()), 'badge ' . $class);

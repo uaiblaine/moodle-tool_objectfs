@@ -56,7 +56,10 @@ class delete_orphaned_object_metadata extends task {
             'ageforremoval' => time() - $ageforremoval,
         ];
 
-        if (!empty($this->config->deleteexternal) && $this->config->deleteexternal == TOOL_OBJECTFS_DELETE_EXTERNAL_TRASH) {
+        if (
+            !empty($this->config->deleteexternal) &&
+            in_array($this->config->deleteexternal, [TOOL_OBJECTFS_DELETE_EXTERNAL_TRASH, TOOL_OBJECTFS_DELETE_EXTERNAL_FULL])
+        ) {
             // We need to delete the external files as well as the orphaned data.
             $filesystem = new $this->config->filesystem();
 
@@ -79,7 +82,9 @@ class delete_orphaned_object_metadata extends task {
             mtrace("Deleted $count orphaned files and their metadata (orphaned tool_objectfs_objects)");
         } else {
             // Delete external files is turned off, we only delete the metadata.
-            $wheresql = 'location = :location and timeduplicated < :ageforremoval';
+            // A file recreated with the same content hash must keep its row, as in the branch above.
+            $wheresql = 'location = :location AND timeduplicated < :ageforremoval
+                     AND NOT EXISTS (SELECT 1 FROM {files} f WHERE f.contenthash = {tool_objectfs_objects}.contenthash)';
             $count = $DB->count_records_select('tool_objectfs_objects', $wheresql, $params);
             if (!empty($count)) {
                 mtrace("Deleting $count records with orphaned metadata (orphaned tool_objectfs_objects)");

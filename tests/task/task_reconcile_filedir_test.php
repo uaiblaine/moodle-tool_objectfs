@@ -46,6 +46,8 @@ final class task_reconcile_filedir_test extends testcase {
 
         // 1. Orphan file (exists on disk, not in mdl_files).
         $orphanfile = $this->create_local_file('orphan content');
+        // The task never removes a file younger than a day, whatever minorphanedage says.
+        touch($this->get_local_path_from_storedfile($orphanfile), time() - (2 * DAYSECS));
         $this->delete_draft_files($orphanfile->get_contenthash());
 
         // 2. File exists in mdl_files but not in ObjectFS, should insert.
@@ -117,5 +119,31 @@ final class task_reconcile_filedir_test extends testcase {
             get_config('tool_objectfs', 'reconcile_file_lasthash'),
             'Last hash should be cleared after full reconciliation.'
         );
+    }
+
+    /**
+     * A fresh unreferenced file survives even with minorphanedage = 0; an old one (control) is removed.
+     */
+    public function test_reconcile_filedir_keeps_fresh_file_when_minorphanedage_is_zero(): void {
+        $this->resetAfterTest(true);
+        $this->enable_filesystem_and_set_tagging(false);
+        set_config('deletelocal', 1, 'tool_objectfs');
+        set_config('minorphanedage', 0, 'tool_objectfs');
+        set_config('reconcile_file_lasthash', '', 'tool_objectfs');
+
+        $fresh = $this->create_local_file('fresh unreferenced content');
+        $freshpath = $this->get_local_path_from_storedfile($fresh);
+        $this->delete_draft_files($fresh->get_contenthash());
+
+        $old = $this->create_local_file('old unreferenced content');
+        touch($this->get_local_path_from_storedfile($old), time() - (2 * DAYSECS));
+        $this->delete_draft_files($old->get_contenthash());
+
+        ob_start();
+        (new reconcile_filedir())->execute();
+        ob_end_clean();
+
+        $this->assertTrue(is_readable($freshpath), 'A file younger than a day must be kept.');
+        $this->assertFalse($this->is_locally_readable_by_hash($old->get_contenthash()), 'Control: an old orphan is removed.');
     }
 }
