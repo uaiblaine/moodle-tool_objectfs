@@ -2,6 +2,8 @@
 
 # moodle-tool_objectfs
 
+> **Fork notice.** This is [uaiblaine/moodle-tool_objectfs](https://github.com/uaiblaine/moodle-tool_objectfs), a fork of [catalyst/moodle-tool_objectfs](https://github.com/catalyst/moodle-tool_objectfs) for **Moodle 5.3 and later** (PHP 8.3+), on branch `main` / `MOODLE_503_STABLE`. The fork's changes, its branch model and how upstream releases are merged are in [FORK.md](FORK.md). The rest of this README is upstream's.
+
 A remote object storage file system for Moodle. Intended to provide a plug-in that can be installed and configured to work with any supported remote object storage solution.
 - [moodle-tool\_objectfs](#moodle-tool_objectfs)
   - [Use cases](#use-cases)
