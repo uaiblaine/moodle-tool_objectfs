@@ -58,8 +58,9 @@ reference.
 | P5 | `manipulator_builder::execute()` checks client availability before fetching and guards an unconfigured file system (a fatal on five task paths). | `classes/local/object_manipulator/manipulator_builder.php`, `classes/tests/unavailable_test_file_system.php` | fork |
 | P6 | Moodle 5.3 only: `requires 2026100500`, `supported [503, 503]`; MAH CI. | `version.php`, `.github/workflows/ci.yml` | fork by design |
 | P7 | README: warning against `local_aws` on Moodle 4.4+, fork notice. | `README.md` | fork |
+| P8 | Lang strings re-sorted: upstream #469 added `settings:presignedurl:presignpublicurls*` out of order, which fails the zero-warning phpcs gate. | `lang/en/tool_objectfs.php` | fork (trivial; offer upstream) |
 
-Files the fork added and upstream does not have: `FORK.md`, `CLAUDE.md`, `CHANGELOG.md`, `COPYING.txt`,
+Files the fork added and upstream does not have: `FORK.md`, `docs/` (audit reports), `CLAUDE.md`, `CHANGELOG.md`, `COPYING.txt`,
 `phpcs.xml`, `.phpcsignore`, `.moodle-plugin-ci.yml`, `.gitattributes`,
 `classes/local/object_manipulator/candidates/candidates_cursor.php` and its test.
 
