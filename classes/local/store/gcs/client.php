@@ -24,16 +24,28 @@
 
 namespace tool_objectfs\local\store\gcs;
 
+use Psr\Http\Message\RequestInterface;
 use tool_objectfs\local\manager;
+use tool_objectfs\local\store\gcs\auth\keyfile_token_provider;
+use tool_objectfs\local\store\gcs\auth\metadata_token_provider;
+use tool_objectfs\local\store\gcs\auth\token_provider;
+use tool_objectfs\local\store\gcs\signing\blob_signer;
+use tool_objectfs\local\store\gcs\signing\iam_blob_signer;
+use tool_objectfs\local\store\gcs\signing\v4_signer;
 use tool_objectfs\local\store\s3\client as s3_client;
+use tool_objectfs\local\store\signed_url;
 
 /**
  * Google Cloud Storage through its XML API, on the S3 client and core's AWS SDK.
  *
  * Fork-owned (FORK.md P16, docs/gcp/DESIGN.md). It overrides only public and protected members of the S3
  * client: the private ones it must not reach ($bucketacl, $signingmethod, the CloudFront signer) are bypassed
- * by overriding the public methods that read them. Signed URLs are the inherited SigV4 presign, which Cloud
- * Storage accepts with HMAC keys on the XML endpoint.
+ * by overriding the public methods that read them.
+ *
+ * Three ways to authenticate: an HMAC key (requests and signed URLs in SigV4, which Cloud Storage accepts on
+ * the XML endpoint), or OAuth tokens of a service account, from the metadata server or from a key file. In the
+ * OAuth modes the SDK signs nothing: a middleware adds the bearer token, and signed URLs are V4 URLs signed by
+ * the service account.
  */
 class client extends s3_client {
     /** @var string Cloud Storage XML API endpoint. */
@@ -44,6 +56,21 @@ class client extends s3_client {
 
     /** @var int Bytes copied to the output per read when proxying a range. */
     const RANGE_CHUNK = 1048576;
+
+    /** @var string Authentication by an HMAC key. */
+    const AUTH_HMAC = 'hmac';
+
+    /** @var string OAuth tokens of the service account attached to the VM, GKE workload or Cloud Run service. */
+    const AUTH_METADATA = 'metadata';
+
+    /** @var string OAuth tokens from a service-account key file. */
+    const AUTH_KEYFILE = 'keyfile';
+
+    /** @var string One of the AUTH_* modes. */
+    protected $authmode = self::AUTH_HMAC;
+
+    /** @var token_provider|null Token source in the OAuth modes. */
+    protected $tokenprovider = null;
 
     /**
      * Constructor.
@@ -73,7 +100,24 @@ class client extends s3_client {
         $this->expirationtime = $config->expirationtime ?? 2 * HOURSECS;
         $this->presignedminfilesize = $config->presignedminfilesize ?? 0;
         $this->enablepresignedurls = $config->enablepresignedurls ?? 0;
+        $this->authmode = self::get_authmode($config);
         $this->set_client($config);
+    }
+
+    /**
+     * The configured authentication mode.
+     *
+     * Before the setting existed the store knew only HMAC keys, so a site that has one and no mode keeps it.
+     *
+     * @param \stdClass $config Plugin config.
+     * @return string One of the AUTH_* modes.
+     */
+    public static function get_authmode(\stdClass $config): string {
+        $mode = $config->gcs_authmode ?? '';
+        if (in_array($mode, [self::AUTH_HMAC, self::AUTH_METADATA, self::AUTH_KEYFILE], true)) {
+            return $mode;
+        }
+        return empty($config->gcs_hmac_key) ? self::AUTH_METADATA : self::AUTH_HMAC;
     }
 
     /**
@@ -97,7 +141,15 @@ class client extends s3_client {
      * @return bool
      */
     public function is_configured($config) {
-        return !empty($config->gcs_bucket) && !empty($config->gcs_hmac_key) && !empty($config->gcs_hmac_secret);
+        if (empty($config->gcs_bucket)) {
+            return false;
+        }
+        return match (self::get_authmode($config)) {
+            self::AUTH_HMAC => !empty($config->gcs_hmac_key) && !empty($config->gcs_hmac_secret),
+            self::AUTH_KEYFILE => !empty($config->gcs_keyfile),
+            // The metadata server needs nothing configured; off Google Cloud the connection test says so.
+            default => true,
+        };
     }
 
     /**
@@ -114,6 +166,41 @@ class client extends s3_client {
 
         $this->ensure_sdk_loaded();
         $this->client = new \Aws\S3\S3Client($this->get_client_options($config));
+
+        $this->tokenprovider = null;
+        if (self::get_authmode($config) !== self::AUTH_HMAC) {
+            $tokens = $this->create_token_provider($config);
+            $this->tokenprovider = $tokens;
+            // The SDK signs anonymously in this mode (credentials false); the token is added after that step.
+            $bearer = fn(RequestInterface $request): RequestInterface =>
+                $request->withHeader('Authorization', 'Bearer ' . $tokens->get_token());
+            $this->client->getHandlerList()->appendSign(\Aws\Middleware::mapRequest($bearer), 'tool_objectfs_gcs_bearer');
+        }
+    }
+
+    /**
+     * The token source of an OAuth mode.
+     *
+     * @param \stdClass $config Plugin config.
+     * @return token_provider
+     */
+    protected function create_token_provider(\stdClass $config): token_provider {
+        if (self::get_authmode($config) === self::AUTH_KEYFILE) {
+            return new keyfile_token_provider($config->gcs_keyfile);
+        }
+        return new metadata_token_provider(trim($config->gcs_serviceaccount ?? ''));
+    }
+
+    /**
+     * The signer of V4 URLs in an OAuth mode: the key file itself, or IAM signBlob for the attached account.
+     *
+     * @return blob_signer
+     */
+    protected function create_blob_signer(): blob_signer {
+        if ($this->tokenprovider instanceof blob_signer) {
+            return $this->tokenprovider;
+        }
+        return new iam_blob_signer($this->tokenprovider);
     }
 
     /**
@@ -134,7 +221,9 @@ class client extends s3_client {
             // Cloud Storage documents only Content-MD5 and x-goog-hash (DESIGN.md D5).
             'request_checksum_calculation' => 'when_required',
             'response_checksum_validation' => 'when_required',
-            'credentials' => ['key' => $config->gcs_hmac_key, 'secret' => $config->gcs_hmac_secret],
+            'credentials' => self::get_authmode($config) === self::AUTH_HMAC
+                ? ['key' => $config->gcs_hmac_key, 'secret' => $config->gcs_hmac_secret]
+                : false,
         ];
 
         if (!empty($config->useproxy)) {
@@ -300,12 +389,125 @@ class client extends s3_client {
                 $connection->success = false;
                 $connection->details = $this->get_exception_details($e);
             }
-        } catch (\Aws\Exception\AwsException | \GuzzleHttp\Exception\InvalidArgumentException $e) {
+        } catch (\Aws\Exception\AwsException | \GuzzleHttp\Exception\InvalidArgumentException | \moodle_exception $e) {
+            // A moodle_exception is a token that could not be obtained.
             $connection->success = false;
             $connection->details = $this->get_exception_details($e);
         }
 
         return $connection;
+    }
+
+    /**
+     * A signed URL for the object: SigV4 with an HMAC key, otherwise V4 signed by the service account.
+     *
+     * @param string $contenthash File content hash.
+     * @param array $headers Response headers set so far (Expires, Content-Disposition, Content-Type).
+     * @return signed_url
+     * @throws \moodle_exception When signing fails.
+     */
+    public function generate_presigned_url($contenthash, $headers = []) {
+        if ($this->authmode === self::AUTH_HMAC) {
+            return parent::generate_presigned_url($contenthash, $headers);
+        }
+
+        $now = time();
+        $expires = $this->get_expiration_time($now, manager::get_header($headers, 'Expires'));
+        // Signed at the start of the minute: with the expiry rounded to the minute too (#457), the URL of a file
+        // is the same for a whole minute, so browsers and the signature cache reuse it.
+        $signedat = $now - $now % MINSECS;
+
+        $query = [];
+        $disposition = manager::get_header($headers, 'Content-Disposition');
+        if ($disposition !== '') {
+            $query['response-content-disposition'] = self::normalise_content_disposition($disposition);
+        }
+        $contenttype = manager::get_header($headers, 'Content-Type');
+        if ($contenttype !== '') {
+            $query['response-content-type'] = $contenttype;
+        }
+
+        $key = $this->bucketkeyprefix . $this->get_filepath_from_hash($contenthash);
+        [$url, $expires] = $this->sign_v4($key, $query, $signedat, $expires);
+        return new signed_url(new \moodle_url($url), $expires);
+    }
+
+    /**
+     * Signs a V4 URL; signBlob signatures are reused while at least half their validity remains.
+     *
+     * signBlob is a network call per URL, a local key is not, so only the former is cached. The cache key holds
+     * no time, so each object and response-header set has one entry.
+     *
+     * @param string $key Object name.
+     * @param array $query Response-header overrides to sign.
+     * @param int $signedat Signing time.
+     * @param int $expires Requested expiry.
+     * @return array The URL and its expiry.
+     * @throws \moodle_exception When signing fails.
+     */
+    protected function sign_v4(string $key, array $query, int $signedat, int $expires): array {
+        $signer = $this->create_blob_signer();
+        if (!$signer instanceof iam_blob_signer) {
+            return [(new v4_signer($signer))->sign_url($this->bucket, $key, $expires - $signedat, $query, $signedat), $expires];
+        }
+
+        $cache = \cache::make_from_params(
+            \cache_store::MODE_APPLICATION,
+            'tool_objectfs',
+            'gcssignedurl',
+            [],
+            ['simplekeys' => true, 'ttl' => v4_signer::MAX_EXPIRES]
+        );
+        $cachekey = sha1(json_encode([$signer->get_email(), $this->bucket, $key, $query]));
+        $cached = $cache->get($cachekey);
+        $now = time();
+        // Reused only while at least half the requested validity remains, and never beyond the requested expiry.
+        $usable = is_array($cached) && $cached['expires'] <= $expires &&
+            $cached['expires'] - $now >= max(2 * MINSECS, intdiv($expires - $now, 2));
+        if ($usable) {
+            return [$cached['url'], $cached['expires']];
+        }
+
+        $url = (new v4_signer($signer))->sign_url($this->bucket, $key, $expires - $signedat, $query, $signedat);
+        $cache->set($cachekey, ['url' => $url, 'expires' => $expires]);
+        return [$url, $expires];
+    }
+
+    /**
+     * Makes a Content-Disposition value safe for a URL-carried response header.
+     *
+     * Core sends the UTF-8 file name raw inside filename="...". An ASCII name is kept as it is; any other gets
+     * an ASCII fallback and the RFC 6266 filename* form.
+     *
+     * @param string $value Content-Disposition value as Moodle sent it.
+     * @return string
+     */
+    public static function normalise_content_disposition(string $value): string {
+        $matched = preg_match('/^\s*([a-z-]+)\s*;\s*filename="(.*)"\s*$/is', $value, $matches);
+        if (!$matched || mb_check_encoding($matches[2], 'ASCII')) {
+            return $value;
+        }
+        if (!mb_check_encoding($matches[2], 'UTF-8')) {
+            // Not UTF-8 either: no filename* can be stated, so the ASCII fallback alone is sent.
+            return $matches[1] . '; filename="' . preg_replace('/[^\x20-\x7e]|["\\\\]/', '_', $matches[2]) . '"';
+        }
+        $fallback = preg_replace('/[^\x20-\x7e]|["\\\\]/u', '_', $matches[2]);
+        return $matches[1] . '; filename="' . $fallback . '"; filename*=UTF-8\'\'' . rawurlencode($matches[2]);
+    }
+
+    /**
+     * Connection-test details; for a token failure they include Google's explanation, kept out of the message.
+     *
+     * @param \Throwable $exception
+     * @return string
+     */
+    protected function get_exception_details(\Throwable $exception) {
+        $details = parent::get_exception_details($exception);
+        $debuginfo = $exception instanceof \moodle_exception ? (string)$exception->debuginfo : '';
+        if ($debuginfo !== '' && !str_contains($details, $debuginfo)) {
+            $details .= 'DETAILS: ' . $debuginfo . "\n";
+        }
+        return $details;
     }
 
     /**
@@ -453,19 +655,51 @@ class client extends s3_client {
             ''
         ));
 
-        $settings->add(new \admin_setting_configtext(
-            'tool_objectfs/gcs_hmac_key',
-            new \lang_string('settings:gcs:hmac_key', 'tool_objectfs'),
-            new \lang_string('settings:gcs:hmac_key_help', 'tool_objectfs'),
-            ''
+        $authmode = self::get_authmode($config);
+        $settings->add(new \admin_setting_configselect(
+            'tool_objectfs/gcs_authmode',
+            new \lang_string('settings:gcs:authmode', 'tool_objectfs'),
+            new \lang_string('settings:gcs:authmode_help', 'tool_objectfs'),
+            $authmode,
+            [
+                self::AUTH_METADATA => new \lang_string('settings:gcs:authmode_metadata', 'tool_objectfs'),
+                self::AUTH_KEYFILE => new \lang_string('settings:gcs:authmode_keyfile', 'tool_objectfs'),
+                self::AUTH_HMAC => new \lang_string('settings:gcs:authmode_hmac', 'tool_objectfs'),
+            ]
         ));
 
-        $settings->add(new \admin_setting_configpasswordunmask(
-            'tool_objectfs/gcs_hmac_secret',
-            new \lang_string('settings:gcs:hmac_secret', 'tool_objectfs'),
-            new \lang_string('settings:gcs:hmac_secret_help', 'tool_objectfs'),
-            ''
-        ));
+        // Only the saved mode's inputs are shown, as the S3 store does for its SDK credentials.
+        if ($authmode === self::AUTH_METADATA) {
+            $settings->add(new \admin_setting_configtext(
+                'tool_objectfs/gcs_serviceaccount',
+                new \lang_string('settings:gcs:serviceaccount', 'tool_objectfs'),
+                new \lang_string('settings:gcs:serviceaccount_help', 'tool_objectfs'),
+                '',
+                PARAM_EMAIL
+            ));
+        } else if ($authmode === self::AUTH_KEYFILE) {
+            $settings->add(new \admin_setting_configtext(
+                'tool_objectfs/gcs_keyfile',
+                new \lang_string('settings:gcs:keyfile', 'tool_objectfs'),
+                new \lang_string('settings:gcs:keyfile_help', 'tool_objectfs'),
+                '',
+                PARAM_PATH
+            ));
+        } else {
+            $settings->add(new \admin_setting_configtext(
+                'tool_objectfs/gcs_hmac_key',
+                new \lang_string('settings:gcs:hmac_key', 'tool_objectfs'),
+                new \lang_string('settings:gcs:hmac_key_help', 'tool_objectfs'),
+                ''
+            ));
+
+            $settings->add(new \admin_setting_configpasswordunmask(
+                'tool_objectfs/gcs_hmac_secret',
+                new \lang_string('settings:gcs:hmac_secret', 'tool_objectfs'),
+                new \lang_string('settings:gcs:hmac_secret_help', 'tool_objectfs'),
+                ''
+            ));
+        }
 
         // The same key as the S3 store's, so that moving a bucket from the S3 store changes no object key.
         $settings->add(new \admin_setting_configtext(

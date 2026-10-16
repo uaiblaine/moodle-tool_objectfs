@@ -25,6 +25,8 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Psr\Http\Message\RequestInterface;
 use tool_objectfs\local\manager;
+use tool_objectfs\local\store\gcs\auth\token_provider;
+use tool_objectfs\local\store\gcs\signing\blob_signer;
 
 /**
  * Google Cloud Storage client, against the AWS SDK's MockHandler: no network.
@@ -76,9 +78,17 @@ final class client_test extends \advanced_testcase {
      * @param array $answers Answers, in request order.
      * @param array $optionoverrides SDK options replacing the client's own.
      * @param array $uploaderoverrides ObjectUploader options added to the client's own.
+     * @param \stdClass|null $config Plugin config, null for the HMAC config.
+     * @param token_provider|null $tokens Token source of the OAuth modes, null for the real one.
      * @return client
      */
-    private function mocked_client(array $answers, array $optionoverrides = [], array $uploaderoverrides = []): client {
+    private function mocked_client(
+        array $answers,
+        array $optionoverrides = [],
+        array $uploaderoverrides = [],
+        ?\stdClass $config = null,
+        ?token_provider $tokens = null
+    ): client {
         $mock = new MockHandler();
         foreach ($answers as $answer) {
             $mock->append(function (CommandInterface $command, RequestInterface $request) use ($answer) {
@@ -96,7 +106,7 @@ final class client_test extends \advanced_testcase {
             });
         }
 
-        return new class (self::config(), $mock, $optionoverrides, $uploaderoverrides) extends client {
+        return new class ($config ?? self::config(), $mock, $optionoverrides, $uploaderoverrides, $tokens) extends client {
             /**
              * Constructor; the promoted properties are set before the parent builds the SDK client. The extra
              * parameters are optional because object_client declares the constructor.
@@ -105,6 +115,7 @@ final class client_test extends \advanced_testcase {
              * @param MockHandler|null $mock SDK handler.
              * @param array $optionoverrides SDK options replacing the client's own.
              * @param array $uploaderoverrides ObjectUploader options added to the client's own.
+             * @param token_provider|null $tokens Token source of the OAuth modes, null for the real one.
              */
             public function __construct(
                 $config,
@@ -113,7 +124,9 @@ final class client_test extends \advanced_testcase {
                 /** @var array SDK options replacing the client's own. */
                 private array $optionoverrides = [],
                 /** @var array ObjectUploader options added to the client's own. */
-                private array $uploaderoverrides = []
+                private array $uploaderoverrides = [],
+                /** @var token_provider|null Token source of the OAuth modes. */
+                private ?token_provider $tokens = null
             ) {
                 parent::__construct($config);
             }
@@ -137,7 +150,122 @@ final class client_test extends \advanced_testcase {
             protected function get_uploader_options(string $mimetype): array {
                 return $this->uploaderoverrides + parent::get_uploader_options($mimetype);
             }
+
+            /**
+             * The injected token source, or the real one.
+             *
+             * @param \stdClass $config Plugin config.
+             * @return token_provider
+             */
+            protected function create_token_provider(\stdClass $config): token_provider {
+                return $this->tokens ?? parent::create_token_provider($config);
+            }
         };
+    }
+
+    /**
+     * A config in an OAuth mode, without HMAC keys.
+     *
+     * @param string $mode client::AUTH_METADATA or client::AUTH_KEYFILE.
+     * @return \stdClass
+     */
+    private static function oauth_config(string $mode = client::AUTH_METADATA): \stdClass {
+        $config = self::config();
+        $config->gcs_authmode = $mode;
+        $config->gcs_hmac_key = '';
+        $config->gcs_hmac_secret = '';
+        $config->gcs_keyfile = $mode === client::AUTH_KEYFILE ? '/etc/moodle/key.json' : '';
+        return $config;
+    }
+
+    /**
+     * A token source with a fixed token, or one that fails.
+     *
+     * @param string|null $failure Message of the failure, null to succeed.
+     * @return token_provider
+     */
+    private static function fixed_tokens(?string $failure = null): token_provider {
+        return new class ($failure) implements token_provider {
+            /**
+             * Constructor.
+             *
+             * @param string|null $failure
+             */
+            public function __construct(
+                /** @var string|null Failure message, null to succeed. */
+                private ?string $failure
+            ) {
+            }
+
+            /**
+             * The fixed token, or the failure.
+             *
+             * @return string
+             */
+            public function get_token(): string {
+                if ($this->failure !== null) {
+                    throw new \moodle_exception('settings:gcs:autherror', 'tool_objectfs', '', 'metadata server', $this->failure);
+                }
+                return 'oauth-token';
+            }
+
+            /**
+             * The fixed account.
+             *
+             * @return string
+             */
+            public function get_email(): string {
+                return 'moodle@project.iam.gserviceaccount.com';
+            }
+        };
+    }
+
+    /**
+     * A token source that also signs locally, as the key file does; its signature is "sig".
+     *
+     * @return token_provider
+     */
+    private static function signing_tokens(): token_provider {
+        return new class () implements blob_signer, token_provider {
+            /**
+             * The fixed token.
+             *
+             * @return string
+             */
+            public function get_token(): string {
+                return 'oauth-token';
+            }
+
+            /**
+             * The fixed account.
+             *
+             * @return string
+             */
+            public function get_email(): string {
+                return 'moodle@project.iam.gserviceaccount.com';
+            }
+
+            /**
+             * A fixed signature.
+             *
+             * @param string $data
+             * @return string
+             */
+            public function sign(string $data): string {
+                return 'sig';
+            }
+        };
+    }
+
+    /**
+     * The query parameters of a signed URL.
+     *
+     * @param \tool_objectfs\local\store\signed_url $signedurl
+     * @return array
+     */
+    private static function query_of(\tool_objectfs\local\store\signed_url $signedurl): array {
+        parse_str((string)parse_url($signedurl->url->out(false), PHP_URL_QUERY), $params);
+        return $params;
     }
 
     /**
@@ -422,6 +550,8 @@ final class client_test extends \advanced_testcase {
     #[DataProvider('not_configured_provider')]
     public function test_not_configured(string $missing): void {
         $config = self::config();
+        // Explicit: with neither a mode nor an access ID the store would use the metadata server.
+        $config->gcs_authmode = client::AUTH_HMAC;
         $config->$missing = '';
         $client = new client($config);
 
@@ -571,5 +701,173 @@ final class client_test extends \advanced_testcase {
         $this->assertTrue($client->is_configured(manager::get_objectfs_config()));
         $url = $client->generate_presigned_url(self::HASH, ['Expires' => time() + HOURSECS])->url->out(false);
         $this->assertStringContainsString('/moodle-files/site/ab/cd/', $url);
+    }
+
+    /**
+     * Authentication modes read from configs.
+     *
+     * @return array
+     */
+    public static function authmode_provider(): array {
+        return [
+            'no mode, HMAC key: the G1 setup keeps working' => [['gcs_hmac_key' => 'GOOG1X'], client::AUTH_HMAC],
+            'no mode, no key' => [[], client::AUTH_METADATA],
+            'key file' => [['gcs_authmode' => 'keyfile', 'gcs_hmac_key' => 'GOOG1X'], client::AUTH_KEYFILE],
+            'metadata' => [['gcs_authmode' => 'metadata'], client::AUTH_METADATA],
+            'unknown mode, HMAC key' => [['gcs_authmode' => 'other', 'gcs_hmac_key' => 'GOOG1X'], client::AUTH_HMAC],
+        ];
+    }
+
+    /**
+     * get_authmode() keeps a site with an HMAC key on it until a mode is chosen.
+     *
+     * @param array $config
+     * @param string $expected
+     */
+    #[DataProvider('authmode_provider')]
+    public function test_get_authmode(array $config, string $expected): void {
+        $this->assertSame($expected, client::get_authmode((object)$config));
+    }
+
+    /**
+     * Each mode needs its own inputs, and every mode needs the bucket.
+     */
+    public function test_is_configured_by_mode(): void {
+        $client = new client(null);
+
+        $this->assertTrue($client->is_configured(self::oauth_config(client::AUTH_METADATA)));
+        $this->assertTrue($client->is_configured(self::oauth_config(client::AUTH_KEYFILE)));
+        $nokeyfile = self::oauth_config(client::AUTH_KEYFILE);
+        $nokeyfile->gcs_keyfile = '';
+        $this->assertFalse($client->is_configured($nokeyfile));
+        $nobucket = self::oauth_config(client::AUTH_METADATA);
+        $nobucket->gcs_bucket = '';
+        $this->assertFalse($client->is_configured($nobucket));
+    }
+
+    /**
+     * In an OAuth mode a request carries the bearer token and no SigV4 signature.
+     */
+    public function test_oauth_requests_carry_the_bearer_token(): void {
+        $client = $this->mocked_client([null], [], [], self::oauth_config(), self::fixed_tokens());
+
+        $client->upload_to_s3($this->temp_file('hello'), self::HASH, 'text/plain');
+
+        $request = $this->requests[0];
+        $this->assertSame('Bearer oauth-token', $request->getHeaderLine('Authorization'));
+        $this->assert_plain_upload_request($request);
+    }
+
+    /**
+     * A token that cannot be obtained fails the connection test with its reason.
+     */
+    public function test_connection_reports_a_token_failure(): void {
+        $client = $this->mocked_client([], [], [], self::oauth_config(), self::fixed_tokens('metadata server unreachable'));
+
+        $result = $client->test_connection();
+
+        $this->assertFalse($result->success);
+        $this->assertStringContainsString('metadata server unreachable', $result->details);
+    }
+
+    /**
+     * In an OAuth mode a signed URL is a V4 URL signed by the service account, with the response headers.
+     */
+    public function test_oauth_signed_url_is_v4_by_the_service_account(): void {
+        $client = $this->mocked_client([], [], [], self::oauth_config(client::AUTH_KEYFILE), self::signing_tokens());
+
+        $signedurl = $client->generate_presigned_url(self::HASH, [
+            'Expires' => time() + HOURSECS,
+            'Content-Disposition' => 'attachment; filename="relatório.pdf"',
+            'Content-Type' => 'application/pdf',
+        ]);
+
+        $this->assertStringStartsWith(
+            'https://storage.googleapis.com/moodle-files/site/ab/cd/' . self::HASH . '?',
+            $signedurl->url->out(false)
+        );
+        $params = self::query_of($signedurl);
+        $this->assertSame('GOOG4-RSA-SHA256', $params['X-Goog-Algorithm']);
+        $this->assertStringStartsWith('moodle@project.iam.gserviceaccount.com/', $params['X-Goog-Credential']);
+        $this->assertSame(bin2hex('sig'), $params['X-Goog-Signature']);
+        $this->assertSame(
+            "attachment; filename=\"relat_rio.pdf\"; filename*=UTF-8''relat%C3%B3rio.pdf",
+            $params['response-content-disposition']
+        );
+        $this->assertSame('application/pdf', $params['response-content-type']);
+        // Signed at the start of a minute, and valid until the expiry the URL reports.
+        $this->assertStringEndsWith('00Z', $params['X-Goog-Date']);
+        $signedat = \DateTime::createFromFormat('Ymd\THis\Z', $params['X-Goog-Date'], new \DateTimeZone('UTC'))->getTimestamp();
+        $this->assertSame($signedurl->expiresat, $signedat + (int)$params['X-Goog-Expires']);
+    }
+
+    /**
+     * signBlob signatures are reused for the same object and headers, and never across headers.
+     */
+    public function test_signblob_signatures_are_cached_per_object_and_headers(): void {
+        $this->resetAfterTest();
+        $client = $this->mocked_client([], [], [], self::oauth_config(), self::fixed_tokens());
+        $headers = ['Expires' => time() + HOURSECS, 'Content-Disposition' => 'inline; filename="a.pdf"'];
+        \curl::mock_response(json_encode(['keyId' => 'k', 'signedBlob' => base64_encode('first')]));
+
+        $first = $client->generate_presigned_url(self::HASH, $headers)->url->out(false);
+        // Nothing is queued: a second signBlob call would reach the network and fail.
+        $again = $client->generate_presigned_url(self::HASH, $headers)->url->out(false);
+        $this->assertSame($first, $again);
+        $this->assertStringContainsString('X-Goog-Signature=' . bin2hex('first'), $first);
+
+        \curl::mock_response(json_encode(['keyId' => 'k', 'signedBlob' => base64_encode('second')]));
+        $headers['Content-Disposition'] = 'inline; filename="b.pdf"';
+        $other = $client->generate_presigned_url(self::HASH, $headers)->url->out(false);
+        $this->assertStringContainsString('X-Goog-Signature=' . bin2hex('second'), $other);
+        $this->assertStringContainsString('b.pdf', $other);
+    }
+
+    /**
+     * A cached signBlob signature is never returned past the expiry the caller asked for.
+     */
+    public function test_signblob_signature_never_outlives_the_requested_expiry(): void {
+        $this->resetAfterTest();
+        $client = $this->mocked_client([], [], [], self::oauth_config(), self::fixed_tokens());
+        \curl::mock_response(json_encode(['keyId' => 'k', 'signedBlob' => base64_encode('long')]));
+        $long = $client->generate_presigned_url(self::HASH, ['Expires' => time() + HOURSECS]);
+
+        \curl::mock_response(json_encode(['keyId' => 'k', 'signedBlob' => base64_encode('short')]));
+        $short = $client->generate_presigned_url(self::HASH, ['Expires' => time() + 5 * MINSECS]);
+
+        $this->assertStringContainsString('X-Goog-Signature=' . bin2hex('short'), $short->url->out(false));
+        $this->assertLessThan($long->expiresat, $short->expiresat);
+    }
+
+    /**
+     * Content-Disposition values and their URL-safe forms.
+     *
+     * @return array
+     */
+    public static function content_disposition_provider(): array {
+        return [
+            'ASCII name kept' => ['attachment; filename="report.pdf"', 'attachment; filename="report.pdf"'],
+            'UTF-8 name' => [
+                'inline; filename="relatório.pdf"',
+                "inline; filename=\"relat_rio.pdf\"; filename*=UTF-8''relat%C3%B3rio.pdf",
+            ],
+            'quote in a UTF-8 name' => [
+                'attachment; filename="a"b é.txt"',
+                "attachment; filename=\"a_b _.txt\"; filename*=UTF-8''a%22b%20%C3%A9.txt",
+            ],
+            'no file name' => ['attachment', 'attachment'],
+            'invalid UTF-8 name' => ["inline; filename=\"a\xff.txt\"", 'inline; filename="a_.txt"'],
+        ];
+    }
+
+    /**
+     * normalise_content_disposition() keeps ASCII and rewrites UTF-8 names per RFC 6266.
+     *
+     * @param string $value
+     * @param string $expected
+     */
+    #[DataProvider('content_disposition_provider')]
+    public function test_normalise_content_disposition(string $value, string $expected): void {
+        $this->assertSame($expected, client::normalise_content_disposition($value));
     }
 }

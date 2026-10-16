@@ -16,6 +16,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before a local copy is deleted, and range requests read on the authenticated client instead of through a
   pre-signed URL. A bucket used through the S3 store can switch without moving objects. Design and later
   stages (keyless authentication, Cloud CDN, load-balancer check) in `docs/gcp/DESIGN.md`.
+- Keyless authentication for the Cloud Storage store:
+  - **Attached service account:** the service account of the VM, GKE workload or Cloud Run service, through the
+    metadata server; no key is stored.
+  - **Service-account key file:** read from disk.
+  - In both modes the requests carry an OAuth bearer token, and signed URLs are V4 URLs signed by the service
+    account: through IAM `signBlob`, cached, or locally with the key file.
+  - Non-ASCII download names are sent in the RFC 6266 form.
+  - A site that already has an HMAC key keeps using it until another mode is chosen.
 
 ### Changed
 

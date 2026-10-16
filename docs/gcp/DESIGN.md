@@ -1,7 +1,8 @@
 # Google Cloud integration: design for owner approval
 
-Status: **approved 2026-10-15** (O1-O4 decided; section 8). G1 implemented on `feat/gcs-store` (gates P16_* in
-`mutations/gates.conf`); its real-bucket items wait for a GCP test project. Written against `main` at fc52a25
+Status: **approved 2026-10-15** (O1-O4 decided; section 8). G1 implemented on `feat/gcs-store`, G2 on
+`feat/gcs-keyless` (gates P16_* in `mutations/gates.conf`; section 9 records what implementation changed in this
+design). Their real-bucket items wait for a GCP test project. Written against `main` at fc52a25
 (Moodle 5.3 only, PHP 8.3+, core AWS SDK 3.369.22). It covers Google Cloud Storage (GCS), Cloud CDN and Cloud
 Armor behind the external Application Load Balancer.
 
@@ -122,19 +123,17 @@ dots [D6]. Porting #739 for the S3 store is a separate decision; it would edit t
 ```
 classes/gcs_file_system.php                    \tool_objectfs\gcs_file_system extends local\store\gcs\file_system (name the mapper expects)
 classes/local/store/gcs/file_system.php        extends s3\file_system; initialise_external_client() returns gcs\client
-classes/local/store/gcs/client.php             extends s3\client (see below)
-classes/local/store/gcs/auth/token_provider.php        interface: get_token(): string, get_expiry(): int
+classes/local/store/gcs/client.php             extends s3\client (see below); bearer middleware, Content-Disposition normalisation
+classes/local/store/gcs/auth/token_provider.php            interface: get_token(), get_email()
+classes/local/store/gcs/auth/cached_token_provider.php     instance + shared application cache, refresh 300 s before expiry
 classes/local/store/gcs/auth/metadata_token_provider.php   GCE/GKE/Cloud Run metadata server
-classes/local/store/gcs/auth/keyfile_token_provider.php    service-account JWT (RS256) to oauth2.googleapis.com/token
-classes/local/store/gcs/auth/bearer_middleware.php         SDK middleware; refreshes 5 min before expiry
-classes/local/store/gcs/signing/v4_signer.php          GOOG4-RSA-SHA256 / GOOG4-HMAC-SHA256 canonical request
-classes/local/store/gcs/signing/blob_signer.php        interface: sign(string): string
+classes/local/store/gcs/auth/keyfile_token_provider.php    service-account JWT (RS256) to oauth2.googleapis.com/token; also the blob signer
+classes/local/store/gcs/signing/v4_signer.php          GOOG4-RSA-SHA256 canonical request (Google's conformance vectors)
+classes/local/store/gcs/signing/blob_signer.php        interface: sign(string): string, get_email()
 classes/local/store/gcs/signing/iam_blob_signer.php    iamcredentials signBlob
-classes/local/store/gcs/signing/key_blob_signer.php    openssl_sign with the key file
-classes/local/store/gcs/signing/cdn_signer.php         Cloud CDN HMAC-SHA1 (section 3)
-classes/local/store/gcs/content_disposition.php        fork copy of the private get_nice_filename() logic, RFC 6266 filename*
-classes/check/gcs_bucket.php                   connection + UBLA + hash verification probe
-classes/check/gcp_load_balancer.php            section 4
+classes/local/store/gcs/signing/cdn_signer.php         Cloud CDN HMAC-SHA1 (section 3, G3)
+classes/check/gcs_bucket.php                   connection + UBLA + hash verification probe (G4)
+classes/check/gcp_load_balancer.php            section 4 (G4)
 classes/tests/test_gcs_integration_client.php  real-bucket client (run-scoped key prefix)
 ```
 
@@ -169,11 +168,10 @@ surface. Tokens are memoised per request and cached in an ad-hoc MUC application
 |---|---|---|---|
 | `gcs_bucket` | text | `''` | |
 | `key_prefix` | text | `''` | Same key as the S3 store, so moving from S3+GCS changes no object key |
-| `gcs_authmode` | select `metadata` / `keyfile` / `hmac` | `metadata` | |
+| `gcs_authmode` | select `metadata` / `keyfile` / `hmac` | `metadata`, or `hmac` when an HMAC key is already saved (O5) | The signer follows the mode: `hmac` presigns SigV4 with the key, `keyfile` signs V4 locally, `metadata` signs V4 through `signBlob`. `signBlob` signatures are cached per object and response headers while at least half their validity remains and never past the requested expiry. |
 | `gcs_keyfile` | text (path) | `''` | Path to the service-account JSON **outside the database**. Recommended through `$CFG->forced_plugin_settings`. Never a textarea holding the key (the audit A6 lesson). |
 | `gcs_hmac_key`, `gcs_hmac_secret` | text / `configpasswordunmask` | `''` | Shown only in `hmac` mode |
 | `gcs_signingmethod` | select `v4` / `cdn` | `v4` | Replaces the global `signingmethod` for this store (E2 decides whether the global select is hidden) |
-| `gcs_signer` | select `iam` / `keyfile` / `hmac` | `iam` | Which credential signs V4 URLs. `iam` calls `signBlob` once per URL, so signed URLs are cached until expiry. `get_expiration_time()` rounds to the minute (#457), so repeat views reuse the same URL [C s3/client.php:771-809]. |
 | `gcs_serviceaccount` | text | `''` | Email for `signBlob` in `iam` mode. In `metadata` mode it is read from `.../service-accounts/default/email` when empty [D9: the path shown on the Cloud Run/GKE pages; U on GCE]. |
 | `gcs_cachecontrol` | text | `''` | Empty means no header. See section 3.4. |
 | `gcs_cdn_*` | | | Section 3 |
@@ -365,7 +363,7 @@ one for the fork's strings alone is an owner decision (O6).
 | tagging | none | `supports_object_tagging()` false; `tag_manager::is_tagging_enabled_and_supported()` false with the GCS store |
 | metadata token provider | `\curl::mock_response()` [C lib/filelib.php:3725] | parses `access_token` / `expires_in`, refreshes 300 s early, cache hit within the window, error on non-200, sends `Metadata-Flavor: Google`, the URL is fixed |
 | keyfile token provider | key pair from `openssl_pkey_new()` in the test; `\curl::mock_response()` | JWT header and claims (`iss`, `scope`, `aud`, `iat`, `exp` ≤ `iat` + 3600 [D10]); the signature verifies with the public key; `grant_type` |
-| V4 signer | fixed clock and key | canonical request and string-to-sign byte-for-byte against hand-computed vectors. Google's published conformance vectors (`googleapis/conformance-tests`, `v4_signatures.json`) **[U]** as to path and licence; use them as a fixture only if their licence fits, with a `thirdpartylibs.xml` row |
+| V4 signer | fixed clock; key made by the test | canonical request, string to sign and URL byte for byte against five of Google's conformance vectors (`googleapis/conformance-tests`, `storage/v1/v4_signatures.json`, Apache-2.0, attributed in the test); the RSA step verified with the test's own key, so no private key is committed (GitHub secret scanning would flag the vectors' dummy key) |
 | CDN signer | fixed key and clock; expected signature computed independently with `openssl dgst -sha1 -mac HMAC` over the same bytes (and, if available, cross-checked once with `gcloud compute sign-url` **[U]**) | parameter order, base64url, raw-key decoding, `Expires` rounding, existing query parameters kept before `Expires` |
 | routing rule (3.2) | headers arrays | attachment goes to V4; inline video goes to CDN; `gcs_cdn_filenames` off means no `response-content-*` in CDN URLs |
 | range proxy | MockHandler GetObject with `Range` | the request carries the range; the output is streamed; no signed URL is generated (the signer double fails the test if called) |
@@ -411,7 +409,7 @@ recorded in `docs/gcp/`):
 |---|---|---|---|
 | **G0** | Owner decisions O1-O4 taken 2026-10-15. A GCP test project, bucket and service account exist. Run real-bucket items 1-5 by hand with the current S3 store to settle the [U] items before code. | none | owner + ~1 h |
 | **G1** | `gcs` store, HMAC mode only: subclass, hardening, `verify_object` by hash, `test_connection`, range proxy without presign, settings, P16 + P17, doubles, integration class, migration note. Signed URLs in G1 are the inherited SDK SigV4 presign with HMAC, which GCS accepts on the XML endpoint [D1, D11]; the upstream `connection` check covers the bucket until G4. | PHPUnit, mutation sweep; real-bucket items 1-5 when a test project exists | ~600 lines |
-| **G2** | Keyless authentication: token providers, bearer middleware, native V4 signer (`iam` / `keyfile` / `hmac`), signed-URL cache. If real-bucket item 2 fails under bearer, **stop**: the native data path (b) becomes its own design. | `security-diff-read` + `!mdlshield review full` (authentication, file serving), real-bucket items 6-9 | ~500 lines |
+| **G2** | Keyless authentication: token providers, bearer middleware, native V4 signer (signer follows the mode; section 9), signed-URL cache. If real-bucket item 2 fails under bearer, **stop**: the native data path (b) becomes its own design. | `security-diff-read` + `!mdlshield review full` (authentication, file serving), real-bucket items 6-9 | ~500 lines |
 | **G3** | Cloud CDN signer, routing rule, CDN settings, `gcs_cachecontrol`, optional cache-control backfill CLI, E2 (P18). | `security-diff-read` + MDL Shield (file serving), CDN runbook items 1-3 | ~300 lines |
 | **G4** | `gcp_load_balancer` and `gcs_bucket` checks with E3 (P19) and `docs/gcp/infrastructure.md` (gcloud + Terraform for the bucket, IAM, backend bucket + keys + include list, the two Cloud Armor policies, firewall). | PHPUnit; runbook items 4-5 | ~250 lines + docs |
 | **G5** | Production soak on one site. Afterwards offer upstream: the store as one pull request, and the check separately. | owner | — |
@@ -434,6 +432,36 @@ Still open (proposed defaults apply until the owner says otherwise):
   has `gcs_hmac_key` set, so that the G2 upgrade cannot switch a running G1 site away from its keys.
   `gcs_cachecontrol` empty by default.
 - **O6** `lang/pt_br`: none; the plugin stays English-only like upstream.
+
+## 9. What implementation changed (G1, G2)
+
+- **Measured: the null ACL.** The SDK sends a null `ACL` as an empty `x-amz-acl` header on a single PutObject. The
+  multipart path drops it. The store unsets the parameter in `before_upload` (section 2.3).
+- **Measured: V4 location `auto`.** Google's own V4 conformance vectors sign with location `auto`. The signer
+  matches five of them byte for byte (canonical request, string to sign, URL). D11's open point is settled for V4.
+- **Simplified: no `gcs_signer` setting.** The signer follows `gcs_authmode`. A separate HMAC signer for OAuth
+  sites only saved the `signBlob` latency, and the signature cache already covers that.
+- **Simplified: no separate files.** The bearer middleware is a closure in `set_client()`. The Content-Disposition
+  rule is `client::normalise_content_disposition()`, not a copy of upstream's private `get_nice_filename()`.
+  - Names that are pure ASCII pass through unchanged.
+  - Other UTF-8 names become an ASCII fallback plus RFC 6266 `filename*`.
+  - Names that are not UTF-8 keep only the fallback.
+  - Whether Cloud Storage honours `filename*` in `response-content-disposition` is real-bucket item 6.
+- **Security read of the G2 diff** (`security-diff-read`, 2026-10-16). Four fixes, each with a test and a mutation
+  gate:
+  - **F1:** Google's error text, which can name the service account, goes to the exception's debug info. The shown
+    message names only the step (token endpoint, metadata server, key file, signBlob). The admin connection test
+    still prints the debug info.
+  - **F2:** a cached signature is never returned past the expiry the caller asked for.
+  - **F3:** the service-account email is checked against address characters before it becomes a signBlob path
+    segment.
+  - **F5:** a file name that is not UTF-8 keeps only the ASCII fallback.
+- **Two points from that read are documented, not changed:**
+  - **F4:** a configured `gcs_serviceaccount` that differs from the attached account signs with the attached
+    account's token. The attached account then needs Service Account Token Creator on the configured one.
+  - **F6:** access tokens sit in the shared application cache (`gcstoken`, an ad-hoc definition) for up to an
+    hour. On a Redis or Memcached store they are readable by anyone who can read that store, which is the same
+    trust as the session store.
 
 ## Appendix A: documentation checks (2026-10-15)
 
