@@ -123,5 +123,8 @@ function tool_objectfs_status_checks() {
         $checks[] = new tool_objectfs\check\proxy_range_request();
     }
 
+    // Fork (FORK.md P19): the Cloud Storage store's checks, empty for other stores.
+    $checks = array_merge($checks, tool_objectfs\check\gcs_bucket::get_store_checks());
+
     return $checks;
 }

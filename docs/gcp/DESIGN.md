@@ -1,8 +1,8 @@
 # Google Cloud integration: design for owner approval
 
-Status: **approved 2026-10-15** (O1-O4 decided; section 8). G1 and G2 merged in #2 (5dd229e); G3 implemented on
-`feat/gcs-cdn` (gates P16_*/P18_* in `mutations/gates.conf`; section 9 records what implementation changed in this
-design). Real-bucket and real-CDN items wait for a GCP test project.
+Status: **approved 2026-10-15** (O1-O4 decided; section 8). G1-G3 merged (#2, #3); G4 implemented on
+`feat/gcs-checks` (gates P16_*/P18_*/P19_* in `mutations/gates.conf`; section 9 records what implementation changed in
+this design). Real-bucket and real-CDN items wait for a GCP test project; `docs/gcp/infrastructure.md` builds one.
 
 Read `FORK.md` first. Every choice below follows its rule: new behaviour goes in **new files** plugged into the
 existing extension points, and each unavoidable edit to an upstream-owned file gets a ledger row.
@@ -482,6 +482,31 @@ Still open (proposed defaults apply until the owner says otherwise):
     else is not sent.
 - **Residual, documented:** CDN edges may keep a cached object for the cache lifetime after Moodle deletes the
   file. No new URL can be issued for it, because Moodle stops granting access.
+- **G4: check naming and placement.** The checks override `get_name()`, so their strings stay in the
+  `settings:gcs:*` block instead of core's `check<class>` keys beside upstream's. The status report lists both
+  checks only when the Cloud Storage store is selected (P19).
+- **G4: the load-balancer check.** It compares core's own `getremoteaddr()` with the two entries the load balancer
+  appended, rather than reading the settings alone. It reports:
+  - NA without X-Forwarded-For;
+  - ERROR when X-Forwarded-For is skipped or Client-IP is read;
+  - ERROR when the load balancer's address is taken as the client's;
+  - WARNING when fewer than two entries arrive, or when the address taken is an earlier, client-supplied entry
+    (an over-broad `reverseproxyignore`).
+- **G4: the bucket check** writes a probe object under `tool_objectfs_probe/` with its own random key on each run,
+  verifies its reported digest, then deletes it.
+- **G4: integration test in key-file mode.** The integration test also runs in key-file mode when its credentials
+  name `gcs_keyfile`. That run settles the G2 rule: does multipart work under bearer tokens?
+- **G4: security read of the diff** (`security-diff-read`, 2026-10-16). Four fixes, each with a test and a
+  mutation gate:
+  - **One probe key per run, deleted afterwards.** A shared key let concurrent runs read each other's object and
+    met Cloud Storage's write limit on one name.
+  - **Unexpected exceptions.** An unexpected exception in the bucket check is that check's ERROR, so the System
+    status report never breaks.
+  - **Escaping.** The probe details (store and SDK text) are escaped in the HTML summary.
+  - **Ports.** X-Forwarded-For entries lose their ports the way `getremoteaddr()` drops them.
+- **Documented, not changed:** the load-balancer check judges the request that shows the report. Opened directly
+  on a backend with a forged X-Forwarded-For, it judges forged data. Only admins see it, and the OK text says the
+  verdict holds for requests through the load balancer.
 
 ## Appendix A: documentation checks (2026-10-15)
 

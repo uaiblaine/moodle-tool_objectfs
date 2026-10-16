@@ -72,12 +72,14 @@ reference.
 | P16 | Google Cloud Storage store (`docs/gcp/DESIGN.md`): `\tool_objectfs\gcs_file_system` added to `manager::get_available_fs_list()`, one array line; the store itself is new files under `classes/local/store/gcs/`. Its client subclasses the S3 client, so **on every sync check that the members it uses still exist with the same meaning**: `$client`, `$bucket`, `$bucketkeyprefix`, `$config`, `$maxupload`, `$expirationtime`, `$presignedminfilesize`, `$enablepresignedurls`, `get_filepath_from_hash()`, `ensure_sdk_loaded()`, `is_functional()`, `get_exception_details()`, `get_proxy_string()`, `upload_to_s3()`, `set_client()`, `generate_presigned_url()`, `proxy_range_request()`, `test_range_request()`, `get_exception_details()`, `get_expiration_time()`, `MAX_TEMP_LIMIT`; and `$client` stays the variable that holds the client in `settings.php` (P18). Its tests fail when one is renamed. | `classes/local/manager.php` | fork (offer upstream as one new store once proven) |
 | P17 | Fork lang block: the GCS store's strings, keyed `settings:gcs:*`, sit together between `settings:fulldelete` and `settings:generalheader`, so a sync conflicts only if upstream changes one of those two neighbours. | `lang/en/tool_objectfs.php` | fork by design |
 | P18 | The signing-method select offers the store client's own methods when the client has `get_signing_methods()` (the GCS store: Cloud Storage or Cloud CDN), upstream's S3/CloudFront otherwise; four lines around the select. | `settings.php` | fork |
+| P19 | `tool_objectfs_status_checks()` adds the Cloud Storage store's checks (`gcs_bucket::get_store_checks()`: the bucket probe and the load-balancer client-address check), empty for other stores; one line. | `lib.php` | fork |
 
 Files the fork added and upstream does not have: `FORK.md`, `docs/` (audit reports), `tests/task/delete_orphaned_object_metadata_test.php`, `tests/task/delete_orphaned_object_metadata_external_test.php`, `mutations/` (mutation spec, `mdl mutate`), `CLAUDE.md`, `CHANGELOG.md`, `COPYING.txt`,
 `phpcs.xml`, `.phpcsignore`, `.moodle-plugin-ci.yml`, `.gitattributes`,
 `classes/local/object_manipulator/candidates/candidates_cursor.php` and its test, the GCS store
-(`classes/gcs_file_system.php`, `classes/local/store/gcs/`, `classes/tests/test_gcs_integration_client.php`,
-`tests/local/store/gcs/`).
+(`classes/gcs_file_system.php`, `classes/local/store/gcs/`, `classes/check/gcs_bucket.php`,
+`classes/check/gcp_load_balancer.php`, `classes/tests/test_gcs_integration_client.php`, `tests/local/store/gcs/`,
+`tests/check/gcs_bucket_test.php`, `tests/check/gcp_load_balancer_test.php`).
 
 ## Rules that keep the fork mergeable
 

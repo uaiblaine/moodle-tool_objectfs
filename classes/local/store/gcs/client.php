@@ -55,6 +55,9 @@ class client extends s3_client {
     /** @var string Key the connection test reads: only "no such key" proves the bucket and the credentials. */
     const SENTINEL_KEY = 'tool_objectfs_connection_check';
 
+    /** @var string Key prefix of the bucket check's probe objects; each run writes and deletes its own. */
+    const PROBE_KEY = 'tool_objectfs_probe';
+
     /** @var int Bytes copied to the output per read when proxying a range. */
     const RANGE_CHUNK = 1048576;
 
@@ -608,6 +611,44 @@ class client extends s3_client {
             $details .= 'DETAILS: ' . $debuginfo . "\n";
         }
         return $details;
+    }
+
+    /**
+     * Writes a probe object the way uploads are written, checks the digest Cloud Storage reports for it, and
+     * deletes it.
+     *
+     * Each run has its own key: two runs at once (two admins, a page view and a task) would otherwise read each
+     * other's object, and Cloud Storage limits writes to one object name to about one a second.
+     *
+     * @return \stdClass With success and details.
+     */
+    public function run_probe(): \stdClass {
+        if (!$this->is_functional()) {
+            return (object)['success' => false, 'details' => get_string('settings:notconfigured', 'tool_objectfs')];
+        }
+
+        $content = 'tool_objectfs probe ' . random_string(16);
+        $params = ['Bucket' => $this->bucket, 'Key' => $this->bucketkeyprefix . self::PROBE_KEY . '/' . random_string(20)];
+        try {
+            $this->client->putObject($params + ['Body' => $content, 'ContentType' => 'text/plain']);
+            $result = $this->client->headObject($params);
+        } catch (\Aws\Exception\AwsException | \GuzzleHttp\Exception\InvalidArgumentException | \moodle_exception $e) {
+            return (object)['success' => false, 'details' => $this->get_exception_details($e)];
+        }
+        try {
+            $this->client->deleteObject($params);
+        } catch (\Aws\Exception\AwsException | \moodle_exception $e) {
+            // A role without delete leaves the probe object behind; the probe itself has passed or failed already.
+            debugging('objectfs: probe object not deleted: ' . $e->getMessage(), DEBUG_DEVELOPER);
+        }
+
+        $path = make_request_directory() . '/probe';
+        file_put_contents($path, $content);
+        $hashes = self::parse_goog_hash((string)($result['@metadata']['headers']['x-goog-hash'] ?? ''));
+        if (!self::local_file_matches_hashes($path, $hashes)) {
+            return (object)['success' => false, 'details' => 'x-goog-hash missing or different from the content written'];
+        }
+        return (object)['success' => true, 'details' => ''];
     }
 
     /**

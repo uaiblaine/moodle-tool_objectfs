@@ -29,6 +29,9 @@ use tool_objectfs\tests\test_gcs_integration_client;
  *         'gcs_bucket' => '...', 'gcs_hmac_key' => '...', 'gcs_hmac_secret' => '...',
  *     ];
  *
+ * With 'gcs_keyfile' => '<path>' instead of the HMAC pair, the same tests run with OAuth bearer tokens and V4 URLs
+ * signed by the key, which settles whether multipart uploads work under OAuth (DESIGN.md, stage G2 rule).
+ *
  * @package   tool_objectfs
  * @copyright 2026 Anderson Blaine
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -50,7 +53,9 @@ final class integration_test extends \advanced_testcase {
         if (empty($CFG->phpunit_objectfs_gcs_integration_test_credentials)) {
             $this->markTestSkipped('No $CFG->phpunit_objectfs_gcs_integration_test_credentials.');
         }
-        $config = (object)($CFG->phpunit_objectfs_gcs_integration_test_credentials + [
+        $credentials = $CFG->phpunit_objectfs_gcs_integration_test_credentials;
+        $config = (object)($credentials + [
+            'gcs_authmode' => empty($credentials['gcs_keyfile']) ? client::AUTH_HMAC : client::AUTH_KEYFILE,
             'key_prefix' => '',
             'expirationtime' => HOURSECS,
             'presignedminfilesize' => 0,

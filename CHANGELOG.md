@@ -31,6 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **File names through the CDN** are signed into CDN URLs only when switched on.
   - **Cache-Control:** an optional value applied to every new object.
   - The signing-method select shows the store's own choices.
+- Status checks for the Cloud Storage store, listed under Reports > System status when that store is selected:
+  - **Bucket probe:** writes an object without an ACL and checks the digest Cloud Storage reports for it.
+  - **Client address:** behind the load balancer, checks that Moodle records the address the load balancer saw:
+    X-Forwarded-For read, Client-IP ignored, the load balancer in reverseproxyignore, and no client-supplied entry
+    used.
+  - **docs/gcp/infrastructure.md:** builds the bucket, the CDN and a dev stack, and lists the checks to run against
+    them.
 
 ### Changed
 
