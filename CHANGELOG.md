@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- Google Cloud Storage store (`\tool_objectfs\gcs_file_system`): the Cloud Storage XML API through core's AWS
+  SDK, with path-style addressing, no canned ACL (works with uniform bucket-level access), no SDK flexible
+  checksums, tagging reported unsupported, objects verified by the CRC32C/MD5 digests Cloud Storage reports
+  before a local copy is deleted, and range requests read on the authenticated client instead of through a
+  pre-signed URL. A bucket used through the S3 store can switch without moving objects. Design and later
+  stages (keyless authentication, Cloud CDN, load-balancer check) in `docs/gcp/DESIGN.md`.
+
 ### Changed
 
 - Moodle 5.3 only: `requires` 5.3 (`2026100500`), `supported = [503, 503]`, PHP 8.3+. The 5.1/5.2 line is

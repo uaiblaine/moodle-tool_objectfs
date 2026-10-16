@@ -69,10 +69,14 @@ reference.
 | P13 | Tag-migration task status badge uses Bootstrap 5 classes with a stated text colour (audit A7). | `classes/task/update_object_tags.php`, `tests/task/update_object_tags_test.php` | fork (offer upstream) |
 | P14 | Upstream #693 ported (open upstream PR; same logic, re-wrapped for the PSR-12 multi-line `if` the zero-warning phpcs gate requires, so a sync conflict on these lines resolves to either side): with `deleteexternal` = full, `delete_orphaned_object_metadata` also removes the remote object of an orphan past the grace period instead of leaving it in the bucket. Safe only because P10 measures the grace from the orphaning. | `classes/task/delete_orphaned_object_metadata.php`, `tests/task/delete_orphaned_object_metadata_external_test.php` | pending (#693); drop the row when upstream merges it |
 | P15 | `phpunit.xml`: `cacheResult="false"` (PHPUnit wrote `.phpunit.result.cache` into the plugin directory, which `mdl mutate --fast` reads as the checkout changing); `version.php` spells the component in single quotes (`mdl mutate` parses only that form). | `phpunit.xml`, `version.php` | fork by design |
+| P16 | Google Cloud Storage store (`docs/gcp/DESIGN.md`): `\tool_objectfs\gcs_file_system` added to `manager::get_available_fs_list()`, one array line; the store itself is new files under `classes/local/store/gcs/`. Its client subclasses the S3 client, so **on every sync check that the members it uses still exist with the same meaning**: `$client`, `$bucket`, `$bucketkeyprefix`, `$config`, `$maxupload`, `$expirationtime`, `$presignedminfilesize`, `$enablepresignedurls`, `get_filepath_from_hash()`, `ensure_sdk_loaded()`, `is_functional()`, `get_exception_details()`, `get_proxy_string()`, `upload_to_s3()`, `set_client()`, `generate_presigned_url()`, `proxy_range_request()`, `test_range_request()`, `MAX_TEMP_LIMIT`. Its tests fail when one is renamed. | `classes/local/manager.php` | fork (offer upstream as one new store once proven) |
+| P17 | Fork lang block: the GCS store's strings, keyed `settings:gcs:*`, sit together between `settings:fulldelete` and `settings:generalheader`, so a sync conflicts only if upstream changes one of those two neighbours. | `lang/en/tool_objectfs.php` | fork by design |
 
 Files the fork added and upstream does not have: `FORK.md`, `docs/` (audit reports), `tests/task/delete_orphaned_object_metadata_test.php`, `tests/task/delete_orphaned_object_metadata_external_test.php`, `mutations/` (mutation spec, `mdl mutate`), `CLAUDE.md`, `CHANGELOG.md`, `COPYING.txt`,
 `phpcs.xml`, `.phpcsignore`, `.moodle-plugin-ci.yml`, `.gitattributes`,
-`classes/local/object_manipulator/candidates/candidates_cursor.php` and its test.
+`classes/local/object_manipulator/candidates/candidates_cursor.php` and its test, the GCS store
+(`classes/gcs_file_system.php`, `classes/local/store/gcs/`, `classes/tests/test_gcs_integration_client.php`,
+`tests/local/store/gcs/`).
 
 ## Rules that keep the fork mergeable
 

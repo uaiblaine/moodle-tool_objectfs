@@ -1,6 +1,7 @@
 # Google Cloud integration: design for owner approval
 
-Status: **approved 2026-10-15** (O1-O4 decided; section 8), G1 in progress. Written against `main` at fc52a25
+Status: **approved 2026-10-15** (O1-O4 decided; section 8). G1 implemented on `feat/gcs-store` (gates P16_* in
+`mutations/gates.conf`); its real-bucket items wait for a GCP test project. Written against `main` at fc52a25
 (Moodle 5.3 only, PHP 8.3+, core AWS SDK 3.369.22). It covers Google Cloud Storage (GCS), Cloud CDN and Cloud
 Armor behind the external Application Load Balancer.
 
@@ -144,9 +145,9 @@ classes/tests/test_gcs_integration_client.php  real-bucket client (run-scoped ke
 | `__construct()` | Reads the `gcs_*` keys with `??` defaults. Sets `$bucket`, `$bucketkeyprefix` (reuses the generic `key_prefix`), `$expirationtime`, `$presignedminfilesize` and `$enablepresignedurls` (the DigitalOcean constructor forgets the last three). Calls `set_client()`. |
 | `is_configured()` | Bucket set, and the auth mode's inputs present. |
 | `set_client()` | `new S3Client` with `endpoint` = `https://storage.googleapis.com`, `use_path_style_endpoint` = true, `region` = `auto`, both checksum options = `when_required`, and credentials from `hmac`, or `false` plus the bearer middleware for `metadata` / `keyfile`. Google's samples use region `auto`, but the docs do not say how the region is used for SigV4 [D6, U]. |
-| `upload_to_s3()` | `ObjectUploader` with **no ACL** (pass `null`, so the header is omitted; [U] that the SDK drops a null `ACL` in both the simple and the multipart path, pinned by a MockHandler test). `CacheControl` comes from `gcs_cachecontrol` when set. Always `ContentType`. |
-| `verify_object()` | `headObject`, then reads `x-goog-hash` from `@metadata.headers`. CRC32C is always compared; MD5 is compared when present (absent on composite and CMEK objects [D8]). Fails closed when the header is missing. `hash('crc32c')` is native PHP. |
-| `test_connection()` | `headObject` on a sentinel key: 404 means connected, 403 means credentials or role. It does not call `ListBuckets`, which needs project-level rights and `x-goog-project-id` under OAuth [D26]. |
+| `upload_to_s3()` | `ObjectUploader` with **no ACL**. Measured in G1: the multipart path drops a null `ACL`, but the single PUT sends it as an empty `x-amz-acl` header (the REST serializer applies null header members), so a `before_upload` callback unsets the parameter. A MockHandler test pins both paths. `CacheControl` comes from `gcs_cachecontrol` when set. Always `ContentType`. |
+| `verify_object()` | `headObject`, then the digests in `x-goog-hash` (`@metadata.headers`): every digest reported must match the local file and at least one must be reported, or verification fails closed. MD5 is absent on composite and CMEK objects [D8]. The SDK keeps only the first value of a repeated header [C lib/aws-sdk/src/WrappedHttpHandler.php:141], so if Cloud Storage repeats `x-goog-hash` instead of folding it, only the first digest is compared (real-bucket item 5). `hash('crc32c')` is native PHP and big-endian like Cloud Storage's encoding (pinned by a test). |
+| `test_connection()` | `getObject` on a sentinel key: only the error code `NoSuchKey` means connected. A HEAD would answer 404 for a missing bucket and a missing key alike, since a HEAD response has no body to carry the code; `NoSuchBucket`, 403 and signature errors fail. It does not call `ListBuckets`, which needs project-level rights and `x-goog-project-id` under OAuth [D26]. [U] that Cloud Storage returns S3's `NoSuchKey` / `NoSuchBucket` codes on the XML API: real-bucket item 1. |
 | `supports_object_tagging()` | `false` (audit A10). |
 | `generate_presigned_url()` | Dispatches on `gcs_signingmethod`: `v4` (native signer) or `cdn` (section 3). |
 | `proxy_range_request()`, `curl_range_request_to_presigned_url()`, `test_range_request()` | **No presigning.** `getObject` with `Range: bytes=a-b` on the same authenticated client. The body is streamed to the output in 1 MiB reads instead of buffered, and TLS stays verified by the SDK. P12's leak class is gone because there is no signed URL to leak. |
@@ -339,7 +340,7 @@ shown only on the plugin settings page through `admin_setting_check`.
 | # | Patch | Files upstream also owns | Status |
 |---|---|---|---|
 | P16 | GCS store registered: `\tool_objectfs\gcs_file_system` added to `manager::get_available_fs_list()` (one array line). Everything else in the store is new files under `classes/local/store/gcs/`. On sync, check that the S3 client's surface the subclass uses still exists: `$client`, `$bucket`, `$bucketkeyprefix`, `get_filepath_from_hash()`, `upload_to_s3()`, `set_client()`, `__wakeup()`, `generate_presigned_url()`, `proxy_range_request()`, `curl_range_request_to_presigned_url()`. | `classes/local/manager.php` | fork (offer upstream as a new store once proven) |
-| P17 | Fork lang block: every string the GCS, CDN and load-balancer work adds, keyed `gcs:*` and `check:gcp_*`, kept contiguous so a sync conflicts only when upstream adds a key in the same alphabetical neighbourhood. | `lang/en/tool_objectfs.php` | fork by design |
+| P17 | Fork lang block: every string the GCS, CDN and load-balancer work adds, keyed `settings:gcs:*` (between `settings:fulldelete` and `settings:generalheader`) and `check:gcp_*`, kept contiguous so a sync conflicts only when upstream adds a key in the same alphabetical neighbourhood. | `lang/en/tool_objectfs.php` | fork by design |
 | P18 | *(only if E2 is approved)* The signing select reads its choices from the client when it offers `get_signing_methods()`. | `settings.php` | fork |
 | P19 | *(only if E3 is approved)* `tool_objectfs_status_checks()` adds `gcp_load_balancer` (and `gcs_bucket` when the GCS store is selected). | `lib.php` | fork |
 
