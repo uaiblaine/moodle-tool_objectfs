@@ -72,8 +72,8 @@ final class client_test extends \advanced_testcase {
     /**
      * A client whose SDK sends every request to a mock handler.
      *
-     * Each queued answer is a Result, an exception, or null for an empty Result. The handler records the
-     * command and the signed request first.
+     * Each queued answer is a Result, an exception, a closure that takes the command and returns a Result, or null
+     * for an empty Result. The handler records the command and the signed request first.
      *
      * @param array $answers Answers, in request order.
      * @param array $optionoverrides SDK options replacing the client's own.
@@ -94,6 +94,9 @@ final class client_test extends \advanced_testcase {
             $mock->append(function (CommandInterface $command, RequestInterface $request) use ($answer) {
                 $this->commands[] = $command;
                 $this->requests[] = $request;
+                if ($answer instanceof \Closure) {
+                    return $answer($command);
+                }
                 if ($answer instanceof \Throwable) {
                     // The SDK passes the failing command to its exception: rebuild the double around it.
                     return $answer instanceof S3Exception ? new S3Exception(
@@ -1014,5 +1017,75 @@ final class client_test extends \advanced_testcase {
      */
     public function test_get_signing_methods(): void {
         $this->assertSame(['s3', client::SIGNING_CDN], array_keys((new client(null))->get_signing_methods()));
+    }
+
+    /**
+     * Probe answers: the digest Cloud Storage reports, computed from what was written, or a wrong one.
+     *
+     * @param bool $matching Whether the reported digest matches the written content.
+     * @return array Answers for PutObject, HeadObject and DeleteObject.
+     */
+    private static function probe_answers(bool $matching): array {
+        $written = '';
+        return [
+            function (CommandInterface $command) use (&$written): Result {
+                $written = (string)$command['Body'];
+                return new Result([]);
+            },
+            function () use (&$written, $matching): Result {
+                $digest = $matching ? base64_encode(hash('crc32c', $written, true)) : 'AAAAAA==';
+                return new Result(['@metadata' => ['headers' => ['x-goog-hash' => 'crc32c=' . $digest]]]);
+            },
+            null,
+        ];
+    }
+
+    /**
+     * The probe writes without an ACL and passes when the reported digest matches.
+     */
+    public function test_probe_passes_on_a_matching_digest(): void {
+        $client = $this->mocked_client(self::probe_answers(true));
+
+        $probe = $client->run_probe();
+
+        $this->assertTrue($probe->success, $probe->details);
+        $names = array_map(fn(CommandInterface $command): string => $command->getName(), $this->commands);
+        $this->assertSame(['PutObject', 'HeadObject', 'DeleteObject'], $names);
+        $this->assertStringStartsWith('/moodle-files/site/' . client::PROBE_KEY . '/', $this->requests[0]->getUri()->getPath());
+        $this->assertSame($this->commands[0]['Key'], $this->commands[2]['Key']);
+        $this->assert_plain_upload_request($this->requests[0]);
+    }
+
+    /**
+     * Two runs write two objects, so concurrent runs never read each other's probe.
+     */
+    public function test_probe_runs_use_their_own_keys(): void {
+        $client = $this->mocked_client(array_merge(self::probe_answers(true), self::probe_answers(true)));
+
+        $client->run_probe();
+        $client->run_probe();
+
+        $this->assertNotSame($this->commands[0]['Key'], $this->commands[3]['Key']);
+    }
+
+    /**
+     * A digest that does not match the written content fails the probe.
+     */
+    public function test_probe_fails_on_a_different_digest(): void {
+        $client = $this->mocked_client(self::probe_answers(false));
+
+        $this->assertFalse($client->run_probe()->success);
+    }
+
+    /**
+     * A refused write fails the probe with the store's error.
+     */
+    public function test_probe_fails_on_a_refused_write(): void {
+        $client = $this->mocked_client([self::s3_error('AccessDenied', 403)], ['retries' => 0]);
+
+        $probe = $client->run_probe();
+
+        $this->assertFalse($probe->success);
+        $this->assertStringContainsString('AccessDenied', $probe->details);
     }
 }
