@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- Google Cloud Storage store (`\tool_objectfs\gcs_file_system`): the Cloud Storage XML API through core's AWS
+  SDK, with path-style addressing, no canned ACL (works with uniform bucket-level access), no SDK flexible
+  checksums, tagging reported unsupported, objects verified by the CRC32C/MD5 digests Cloud Storage reports
+  before a local copy is deleted, and range requests read on the authenticated client instead of through a
+  pre-signed URL. A bucket used through the S3 store can switch without moving objects. Design and later
+  stages (keyless authentication, Cloud CDN, load-balancer check) in `docs/gcp/DESIGN.md`.
+- Keyless authentication for the Cloud Storage store:
+  - **Attached service account:** the service account of the VM, GKE workload or Cloud Run service, through the
+    metadata server; no key is stored.
+  - **Service-account key file:** read from disk.
+  - In both modes the requests carry an OAuth bearer token, and signed URLs are V4 URLs signed by the service
+    account: through IAM `signBlob`, cached, or locally with the key file.
+  - Non-ASCII download names are sent in the RFC 6266 form.
+  - A site that already has an HMAC key keeps using it until another mode is chosen.
+
 ### Changed
 
 - Moodle 5.3 only: `requires` 5.3 (`2026100500`), `supported = [503, 503]`, PHP 8.3+. The 5.1/5.2 line is
