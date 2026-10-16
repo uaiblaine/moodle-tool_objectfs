@@ -1,10 +1,8 @@
 # Google Cloud integration: design for owner approval
 
-Status: **approved 2026-10-15** (O1-O4 decided; section 8). G1 implemented on `feat/gcs-store`, G2 on
-`feat/gcs-keyless` (gates P16_* in `mutations/gates.conf`; section 9 records what implementation changed in this
-design). Their real-bucket items wait for a GCP test project. Written against `main` at fc52a25
-(Moodle 5.3 only, PHP 8.3+, core AWS SDK 3.369.22). It covers Google Cloud Storage (GCS), Cloud CDN and Cloud
-Armor behind the external Application Load Balancer.
+Status: **approved 2026-10-15** (O1-O4 decided; section 8). G1 and G2 merged in #2 (5dd229e); G3 implemented on
+`feat/gcs-cdn` (gates P16_*/P18_* in `mutations/gates.conf`; section 9 records what implementation changed in this
+design). Real-bucket and real-CDN items wait for a GCP test project.
 
 Read `FORK.md` first. Every choice below follows its rule: new behaviour goes in **new files** plugged into the
 existing extension points, and each unavoidable edit to an upstream-owned file gets a ledger row.
@@ -171,7 +169,7 @@ surface. Tokens are memoised per request and cached in an ad-hoc MUC application
 | `gcs_authmode` | select `metadata` / `keyfile` / `hmac` | `metadata`, or `hmac` when an HMAC key is already saved (O5) | The signer follows the mode: `hmac` presigns SigV4 with the key, `keyfile` signs V4 locally, `metadata` signs V4 through `signBlob`. `signBlob` signatures are cached per object and response headers while at least half their validity remains and never past the requested expiry. |
 | `gcs_keyfile` | text (path) | `''` | Path to the service-account JSON **outside the database**. Recommended through `$CFG->forced_plugin_settings`. Never a textarea holding the key (the audit A6 lesson). |
 | `gcs_hmac_key`, `gcs_hmac_secret` | text / `configpasswordunmask` | `''` | Shown only in `hmac` mode |
-| `gcs_signingmethod` | select `v4` / `cdn` | `v4` | Replaces the global `signingmethod` for this store (E2 decides whether the global select is hidden) |
+| `signingmethod` (upstream key, E2) | select `s3` / `cdn` | `s3` | On this store the choices come from `client::get_signing_methods()`: `s3` (kept as the select's default) means signed by Cloud Storage, `cdn` sends inline media through Cloud CDN. No store-specific key. |
 | `gcs_serviceaccount` | text | `''` | Email for `signBlob` in `iam` mode. In `metadata` mode it is read from `.../service-accounts/default/email` when empty [D9: the path shown on the Cloud Run/GKE pages; U on GCE]. |
 | `gcs_cachecontrol` | text | `''` | Empty means no header. See section 3.4. |
 | `gcs_cdn_*` | | | Section 3 |
@@ -216,7 +214,7 @@ Design:
    either [D11]. If the real-bucket test fails, `gcs_cdn_filenames` is removed and the next rule decides.
 3. **Routing rule (default):** a response that Moodle sends with `Content-Disposition: attachment` goes to a
    **V4** URL. Inline media (`video/*`, `audio/*`, `image/*`, PDF viewed inline) goes to the **CDN**. That is the
-   traffic where caching pays and the filename barely matters. Setting: `gcs_cdn_mimetypes`, a filetypes list
+   traffic where caching pays and the filename barely matters. Setting: `gcs_cdn_filetypes`, a filetypes list
    with the default `web_video, web_audio, web_image`.
 
 ### 3.3 Dispatch with the fewest upstream edits
@@ -240,7 +238,7 @@ CDN settings (store section):
 | `gcs_cdn_keyname` | text, `[A-Za-z0-9_-]{1,63}` [D14] | |
 | `gcs_cdn_key` | `configpasswordunmask` | base64url of the 16-byte key, decoded before signing [D14]. Hashed before any cache key (fleet rule). |
 | `gcs_cdn_filenames` | checkbox, default off | Section 3.2 |
-| `gcs_cdn_mimetypes` | filetypes | Section 3.2 |
+| `gcs_cdn_filetypes` | filetypes, default `web_audio,web_image,web_video` | Section 3.2; matched by the file name's extension with core's `filetypes_util`, as upstream's `signingwhitelist` is |
 
 Key rotation (documented in `infrastructure.md`): add key N+1 to the backend bucket, which holds up to 3 keys.
 Then switch `gcs_cdn_keyname` and `gcs_cdn_key`, wait for the maximum URL lifetime (`expirationtime`, capped
@@ -433,7 +431,7 @@ Still open (proposed defaults apply until the owner says otherwise):
   `gcs_cachecontrol` empty by default.
 - **O6** `lang/pt_br`: none; the plugin stays English-only like upstream.
 
-## 9. What implementation changed (G1, G2)
+## 9. What implementation changed (G1, G2, G3)
 
 - **Measured: the null ACL.** The SDK sends a null `ACL` as an empty `x-amz-acl` header on a single PutObject. The
   multipart path drops it. The store unsets the parameter in `before_upload` (section 2.3).
@@ -462,6 +460,28 @@ Still open (proposed defaults apply until the owner says otherwise):
   - **F6:** access tokens sit in the shared application cache (`gcstoken`, an ad-hoc definition) for up to an
     hour. On a Redis or Memcached store they are readable by anyone who can read that store, which is the same
     trust as the session store.
+- **G3: the signing select.** The CDN is chosen in upstream's own `signingmethod` select (E2, P18), whose choices
+  the store supplies, rather than in a store-specific `gcs_signingmethod`. The CDN settings appear in the store's
+  section once `cdn` is saved. A CDN missing its URL, key name or key falls back to Cloud Storage URLs; settings
+  that are present but unusable (non-https URL, bad key name, key not 16 bytes) raise
+  `settings:gcs:cdnmisconfigured`.
+- **G3: CDN URL encoding.** The CDN signer encodes the query with `rawurlencode()`, which is what `\moodle_url`
+  re-encodes to, so the signed part reaches the browser byte for byte (pinned by a test). The padded base64url
+  signature's `=` leaves `\moodle_url` as `%3D`; Cloud CDN is expected to decode query values before comparing
+  the signature. **[U]**: CDN runbook item 1.
+- **G3: not built.** The `cli/gcs_set_cache_control.php` backfill is not built: only new objects get
+  `gcs_cachecontrol`.
+- **G3: security read of the diff** (`security-diff-read`, 2026-10-16). Three fixes, each with a test and a
+  mutation gate:
+  - **Unusable CDN settings:** settings that are present but unusable no longer throw for every file. The signer
+    is built only after the routing rule chose the CDN, and a failure gives a Cloud Storage URL plus a developer
+    notice.
+  - **Routing extension:** it is taken from the whole quoted `filename`, because upstream's
+    `get_filename_from_header()` stops at `; `.
+  - **Cache-Control value:** `gcs_cachecontrol` accepts only directive characters, and a value holding anything
+    else is not sent.
+- **Residual, documented:** CDN edges may keep a cached object for the cache lifetime after Moodle deletes the
+  file. No new URL can be issued for it, because Moodle stops granting access.
 
 ## Appendix A: documentation checks (2026-10-15)
 

@@ -1,0 +1,1 @@
+s{\(\$config->signingmethod \?\? ''\) !== self::SIGNING_CDN \|\| empty\(\$config->gcs_cdn_baseurl\) \|\|\n\s*empty\(\$config->gcs_cdn_keyname\) \|\| empty\(\$config->gcs_cdn_key\)}{(\$config->signingmethod ?? '') !== self::SIGNING_CDN};

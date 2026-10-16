@@ -333,7 +333,21 @@ final class client_test extends \advanced_testcase {
         $this->assertSame('/moodle-files/site/ab/cd/' . self::HASH, $request->getUri()->getPath());
         $this->assertSame('text/plain', $request->getHeaderLine('Content-Type'));
         $this->assertStringContainsString('/auto/s3/aws4_request', $request->getHeaderLine('Authorization'));
+        $this->assertFalse($request->hasHeader('Cache-Control'));
         $this->assert_plain_upload_request($request);
+    }
+
+    /**
+     * A configured Cache-Control reaches the object's metadata.
+     */
+    public function test_upload_sets_the_configured_cache_control(): void {
+        $config = self::config();
+        $config->gcs_cachecontrol = 'private, max-age=31536000, immutable';
+        $client = $this->mocked_client([null], [], [], $config);
+
+        $client->upload_to_s3($this->temp_file('hello'), self::HASH, 'text/plain');
+
+        $this->assertSame('private, max-age=31536000, immutable', $this->requests[0]->getHeaderLine('Cache-Control'));
     }
 
     /**
@@ -869,5 +883,136 @@ final class client_test extends \advanced_testcase {
     #[DataProvider('content_disposition_provider')]
     public function test_normalise_content_disposition(string $value, string $expected): void {
         $this->assertSame($expected, client::normalise_content_disposition($value));
+    }
+
+    /**
+     * A config that sends media through Cloud CDN.
+     *
+     * @return \stdClass
+     */
+    private static function cdn_config(): \stdClass {
+        $config = self::config();
+        $config->signingmethod = client::SIGNING_CDN;
+        $config->gcs_cdn_baseurl = 'https://media.example.org';
+        $config->gcs_cdn_keyname = 'moodle-key-1';
+        $config->gcs_cdn_key = 'nZtRohdNF9m3cKM24IcK4w==';
+        return $config;
+    }
+
+    /**
+     * Inline media goes through the CDN, without response overrides by default.
+     */
+    public function test_inline_media_goes_through_the_cdn(): void {
+        $client = new client(self::cdn_config());
+
+        $url = $client->generate_presigned_url(self::HASH, [
+            'Expires' => time() + HOURSECS,
+            'Content-Disposition' => 'inline; filename="lecture.mp4"',
+            'Content-Type' => 'video/mp4',
+        ])->url->out(false);
+
+        $this->assertStringStartsWith('https://media.example.org/site/ab/cd/' . self::HASH . '?Expires=', $url);
+        $this->assertStringContainsString('&KeyName=moodle-key-1&Signature=', $url);
+        $this->assertStringNotContainsString('response-content-disposition', $url);
+    }
+
+    /**
+     * With file names on, the overrides are signed into the CDN URL.
+     */
+    public function test_cdn_file_names_are_signed_when_enabled(): void {
+        $config = self::cdn_config();
+        $config->gcs_cdn_filenames = 1;
+        $client = new client($config);
+
+        $url = $client->generate_presigned_url(self::HASH, [
+            'Expires' => time() + HOURSECS,
+            'Content-Disposition' => 'inline; filename="lecture.mp4"',
+            'Content-Type' => 'video/mp4',
+        ])->url->out(false);
+
+        $this->assertStringStartsWith('https://media.example.org/', $url);
+        $this->assertStringContainsString('response-content-disposition=inline%3B%20filename%3D%22lecture.mp4%22', $url);
+    }
+
+    /**
+     * Requests that keep Cloud Storage URLs under the CDN method.
+     *
+     * @return array
+     */
+    public static function storage_url_provider(): array {
+        return [
+            'download of media' => ['attachment; filename="lecture.mp4"', true],
+            'inline non-media' => ['inline; filename="notes.pdf"', true],
+            'no file name' => ['inline', true],
+            'name hiding another extension' => ['inline; filename="a.mp4; b.html"', true],
+            'CDN not configured' => ['inline; filename="lecture.mp4"', false],
+        ];
+    }
+
+    /**
+     * Downloads, other types and an unconfigured CDN keep Cloud Storage signed URLs.
+     *
+     * @param string $disposition Content-Disposition of the response.
+     * @param bool $cdnconfigured Whether the CDN key is set.
+     */
+    #[DataProvider('storage_url_provider')]
+    public function test_storage_url_outside_the_cdn_rule(string $disposition, bool $cdnconfigured): void {
+        $config = self::cdn_config();
+        if (!$cdnconfigured) {
+            $config->gcs_cdn_key = '';
+        }
+        $client = new client($config);
+
+        $url = $client->generate_presigned_url(self::HASH, [
+            'Expires' => time() + HOURSECS,
+            'Content-Disposition' => $disposition,
+        ])->url->out(false);
+
+        $this->assertStringStartsWith('https://storage.googleapis.com/moodle-files/', $url);
+    }
+
+    /**
+     * CDN settings that are present but unusable give media a Cloud Storage URL and a developer notice.
+     */
+    public function test_unusable_cdn_settings_fall_back_to_storage(): void {
+        $config = self::cdn_config();
+        $config->gcs_cdn_key = 'too-short';
+        $client = new client($config);
+
+        $download = $client->generate_presigned_url(self::HASH, [
+            'Expires' => time() + HOURSECS,
+            'Content-Disposition' => 'attachment; filename="lecture.mp4"',
+        ])->url->out(false);
+        $this->assertDebuggingNotCalled();
+
+        $media = $client->generate_presigned_url(self::HASH, [
+            'Expires' => time() + HOURSECS,
+            'Content-Disposition' => 'inline; filename="lecture.mp4"',
+        ])->url->out(false);
+        $this->assertDebuggingCalled();
+
+        $this->assertStringStartsWith('https://storage.googleapis.com/', $download);
+        $this->assertStringStartsWith('https://storage.googleapis.com/', $media);
+    }
+
+    /**
+     * A Cache-Control value holding a line break is not sent.
+     */
+    public function test_upload_ignores_a_cache_control_with_a_line_break(): void {
+        $config = self::config();
+        $config->gcs_cachecontrol = "private\r\nX-Injected: 1";
+        $client = $this->mocked_client([null], [], [], $config);
+
+        $client->upload_to_s3($this->temp_file('hello'), self::HASH, 'text/plain');
+
+        $this->assertFalse($this->requests[0]->hasHeader('Cache-Control'));
+        $this->assertFalse($this->requests[0]->hasHeader('X-Injected'));
+    }
+
+    /**
+     * The store names its signing methods for the settings page.
+     */
+    public function test_get_signing_methods(): void {
+        $this->assertSame(['s3', client::SIGNING_CDN], array_keys((new client(null))->get_signing_methods()));
     }
 }

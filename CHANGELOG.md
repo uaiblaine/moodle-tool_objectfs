@@ -24,6 +24,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     account: through IAM `signBlob`, cached, or locally with the key file.
   - Non-ASCII download names are sent in the RFC 6266 form.
   - A site that already has an HMAC key keeps using it until another mode is chosen.
+- Cloud CDN for the Cloud Storage store:
+  - **Signing method "Cloud CDN for media":** inline audio, image and video files (the list is configurable)
+    redirect to Cloud CDN signed URLs (Expires, KeyName, HMAC-SHA1 Signature), one per object.
+  - **Downloads stay on Cloud Storage URLs,** because a backend bucket leaves the download name out of its cache key.
+  - **File names through the CDN** are signed into CDN URLs only when switched on.
+  - **Cache-Control:** an optional value applied to every new object.
+  - The signing-method select shows the store's own choices.
 
 ### Changed
 

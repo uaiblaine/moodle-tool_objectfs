@@ -30,6 +30,7 @@ use tool_objectfs\local\store\gcs\auth\keyfile_token_provider;
 use tool_objectfs\local\store\gcs\auth\metadata_token_provider;
 use tool_objectfs\local\store\gcs\auth\token_provider;
 use tool_objectfs\local\store\gcs\signing\blob_signer;
+use tool_objectfs\local\store\gcs\signing\cdn_signer;
 use tool_objectfs\local\store\gcs\signing\iam_blob_signer;
 use tool_objectfs\local\store\gcs\signing\v4_signer;
 use tool_objectfs\local\store\s3\client as s3_client;
@@ -71,6 +72,15 @@ class client extends s3_client {
 
     /** @var token_provider|null Token source in the OAuth modes. */
     protected $tokenprovider = null;
+
+    /** @var string Value of the signing method setting that sends media through Cloud CDN. */
+    const SIGNING_CDN = 'cdn';
+
+    /** @var string Characters a Cache-Control value may hold: directives, values, commas and spaces. */
+    const CACHE_CONTROL_PATTERN = '/^[A-Za-z0-9 ,=_-]*$/';
+
+    /** @var string File types served through Cloud CDN by default. */
+    const CDN_DEFAULT_TYPES = 'web_audio,web_image,web_video';
 
     /**
      * Constructor.
@@ -281,7 +291,14 @@ class client extends s3_client {
      * @return array Options for \Aws\S3\ObjectUploader.
      */
     protected function get_uploader_options(string $mimetype): array {
-        return ['params' => ['ContentType' => $mimetype]];
+        $params = ['ContentType' => $mimetype];
+        // Objects are named by their content, so they never change: any lifetime is safe for them. The setting only
+        // takes directive characters; a value that holds anything else (a line break) is not sent.
+        $cachecontrol = trim((string)($this->config->gcs_cachecontrol ?? ''));
+        if ($cachecontrol !== '' && preg_match(self::CACHE_CONTROL_PATTERN, $cachecontrol)) {
+            $params['CacheControl'] = $cachecontrol;
+        }
+        return ['params' => $params];
     }
 
     /**
@@ -407,6 +424,14 @@ class client extends s3_client {
      * @throws \moodle_exception When signing fails.
      */
     public function generate_presigned_url($contenthash, $headers = []) {
+        $cdn = $this->is_served_through_cdn($headers) ? $this->get_cdn_signer() : null;
+        if ($cdn !== null) {
+            $expires = $this->get_expiration_time(time(), manager::get_header($headers, 'Expires'));
+            $key = $this->bucketkeyprefix . $this->get_filepath_from_hash($contenthash);
+            $query = !empty($this->config->gcs_cdn_filenames) ? $this->get_response_header_overrides($headers) : [];
+            return new signed_url(new \moodle_url($cdn->sign_url($key, $query, $expires)), $expires);
+        }
+
         if ($this->authmode === self::AUTH_HMAC) {
             return parent::generate_presigned_url($contenthash, $headers);
         }
@@ -417,6 +442,19 @@ class client extends s3_client {
         // is the same for a whole minute, so browsers and the signature cache reuse it.
         $signedat = $now - $now % MINSECS;
 
+        $query = $this->get_response_header_overrides($headers);
+        $key = $this->bucketkeyprefix . $this->get_filepath_from_hash($contenthash);
+        [$url, $expires] = $this->sign_v4($key, $query, $signedat, $expires);
+        return new signed_url(new \moodle_url($url), $expires);
+    }
+
+    /**
+     * The response-header overrides a signed URL carries: the download name and the type.
+     *
+     * @param array $headers Response headers set so far.
+     * @return array Query parameters by name.
+     */
+    protected function get_response_header_overrides(array $headers): array {
         $query = [];
         $disposition = manager::get_header($headers, 'Content-Disposition');
         if ($disposition !== '') {
@@ -426,10 +464,72 @@ class client extends s3_client {
         if ($contenttype !== '') {
             $query['response-content-type'] = $contenttype;
         }
+        return $query;
+    }
 
-        $key = $this->bucketkeyprefix . $this->get_filepath_from_hash($contenthash);
-        [$url, $expires] = $this->sign_v4($key, $query, $signedat, $expires);
-        return new signed_url(new \moodle_url($url), $expires);
+    /**
+     * The Cloud CDN signer when signed URLs go through Cloud CDN and the CDN is configured, otherwise null.
+     *
+     * Settings that are present but unusable also give null, with a developer notice: the file then gets a Cloud
+     * Storage URL instead of losing its redirect.
+     *
+     * @return cdn_signer|null
+     */
+    protected function get_cdn_signer(): ?cdn_signer {
+        $config = $this->config;
+        if (
+            ($config->signingmethod ?? '') !== self::SIGNING_CDN || empty($config->gcs_cdn_baseurl) ||
+            empty($config->gcs_cdn_keyname) || empty($config->gcs_cdn_key)
+        ) {
+            return null;
+        }
+        try {
+            return new cdn_signer($config->gcs_cdn_baseurl, $config->gcs_cdn_keyname, $config->gcs_cdn_key);
+        } catch (\moodle_exception $e) {
+            debugging($e->getMessage(), DEBUG_DEVELOPER);
+            return null;
+        }
+    }
+
+    /**
+     * Whether a response goes through Cloud CDN: inline, and a file type on the CDN list.
+     *
+     * Downloads (attachment) keep Cloud Storage URLs: a backend bucket leaves response-content-disposition out
+     * of its cache key, so a CDN-cached download could carry another user's file name (DESIGN.md section 3.2).
+     *
+     * @param array $headers Response headers set so far.
+     * @return bool
+     */
+    protected function is_served_through_cdn(array $headers): bool {
+        $disposition = trim(manager::get_header($headers, 'Content-Disposition'));
+        if ($disposition === '' || stripos($disposition, 'attachment') === 0) {
+            return false;
+        }
+        // The whole quoted name: manager::get_filename_from_header() stops at the first "; ", so "a.mp4; b.html"
+        // would read as an mp4.
+        if (!preg_match('/;\s*filename="(.*)"\s*$/is', $disposition, $matches) || $matches[1] === '') {
+            return false;
+        }
+        $filename = $matches[1];
+
+        $util = new \core_form\filetypes_util();
+        $types = $util->normalize_file_types($this->config->gcs_cdn_filetypes ?? self::CDN_DEFAULT_TYPES);
+        $extension = strtolower('.' . pathinfo($filename, PATHINFO_EXTENSION));
+        return !empty($types) && $util->is_listed($extension, $types);
+    }
+
+    /**
+     * Signing methods offered on this store's settings page, by setting value (settings.php, FORK.md P18).
+     *
+     * 's3' keeps the select's default value and means "signed by Cloud Storage" here.
+     *
+     * @return array
+     */
+    public function get_signing_methods(): array {
+        return [
+            's3' => new \lang_string('settings:gcs:signing_storage', 'tool_objectfs'),
+            self::SIGNING_CDN => new \lang_string('settings:gcs:signing_cdn', 'tool_objectfs'),
+        ];
     }
 
     /**
@@ -698,6 +798,54 @@ class client extends s3_client {
                 new \lang_string('settings:gcs:hmac_secret', 'tool_objectfs'),
                 new \lang_string('settings:gcs:hmac_secret_help', 'tool_objectfs'),
                 ''
+            ));
+        }
+
+        $settings->add(new \admin_setting_configtext(
+            'tool_objectfs/gcs_cachecontrol',
+            new \lang_string('settings:gcs:cachecontrol', 'tool_objectfs'),
+            new \lang_string('settings:gcs:cachecontrol_help', 'tool_objectfs'),
+            '',
+            self::CACHE_CONTROL_PATTERN
+        ));
+
+        if (($config->signingmethod ?? '') === self::SIGNING_CDN) {
+            $settings->add(new \admin_setting_heading(
+                'tool_objectfs/gcs_cdn',
+                new \lang_string('settings:gcs:cdn', 'tool_objectfs'),
+                new \lang_string('settings:gcs:cdn_desc', 'tool_objectfs')
+            ));
+            $settings->add(new \admin_setting_configtext(
+                'tool_objectfs/gcs_cdn_baseurl',
+                new \lang_string('settings:gcs:cdn_baseurl', 'tool_objectfs'),
+                new \lang_string('settings:gcs:cdn_baseurl_help', 'tool_objectfs'),
+                '',
+                PARAM_URL
+            ));
+            $settings->add(new \admin_setting_configtext(
+                'tool_objectfs/gcs_cdn_keyname',
+                new \lang_string('settings:gcs:cdn_keyname', 'tool_objectfs'),
+                new \lang_string('settings:gcs:cdn_keyname_help', 'tool_objectfs'),
+                '',
+                PARAM_ALPHANUMEXT
+            ));
+            $settings->add(new \admin_setting_configpasswordunmask(
+                'tool_objectfs/gcs_cdn_key',
+                new \lang_string('settings:gcs:cdn_key', 'tool_objectfs'),
+                new \lang_string('settings:gcs:cdn_key_help', 'tool_objectfs'),
+                ''
+            ));
+            $settings->add(new \admin_setting_filetypes(
+                'tool_objectfs/gcs_cdn_filetypes',
+                new \lang_string('settings:gcs:cdn_filetypes', 'tool_objectfs'),
+                new \lang_string('settings:gcs:cdn_filetypes_help', 'tool_objectfs'),
+                self::CDN_DEFAULT_TYPES
+            ));
+            $settings->add(new \admin_setting_configcheckbox(
+                'tool_objectfs/gcs_cdn_filenames',
+                new \lang_string('settings:gcs:cdn_filenames', 'tool_objectfs'),
+                new \lang_string('settings:gcs:cdn_filenames_help', 'tool_objectfs'),
+                0
             ));
         }
 
