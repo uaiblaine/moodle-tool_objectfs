@@ -1,0 +1,1 @@
+s{if \(!preg_match\('/;\\s\*filename="\(\.\*\)"\\s\*\$/is', \$disposition, \$matches\) \|\| \$matches\[1\] === ''\) \{\n\s*return false;\n\s*\}\n\s*\$filename = \$matches\[1\];}{\$filename = manager::get_filename_from_header(\$disposition);};

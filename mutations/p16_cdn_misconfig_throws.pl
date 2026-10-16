@@ -1,0 +1,1 @@
+s{try \{\n\s*(return new cdn_signer\(\$config->gcs_cdn_baseurl, \$config->gcs_cdn_keyname, \$config->gcs_cdn_key\);)\n\s*\} catch \(\\moodle_exception \$e\) \{\n\s*debugging\(\$e->getMessage\(\), DEBUG_DEVELOPER\);\n\s*return null;\n\s*\}}{$1};

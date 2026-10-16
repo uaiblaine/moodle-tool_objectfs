@@ -304,13 +304,18 @@ if ($ADMIN->fulltree) {
                 )
             );
 
+            // Fork (FORK.md P18): a store client may name its own signing methods.
+            $signingmethods = ['s3' => 'S3', 'cf' => 'CloudFront'];
+            if ($client && method_exists($client, 'get_signing_methods')) {
+                $signingmethods = $client->get_signing_methods();
+            }
             $settings->add(
                 new admin_setting_configselect(
                     'tool_objectfs/signingmethod',
                     get_string('settings:presignedurl:enablepresignedurlschoice', OBJECTFS_PLUGIN_NAME),
                     '',
                     's3',
-                    ['s3' => 'S3', 'cf' => 'CloudFront']
+                    $signingmethods
                 )
             );
 
