@@ -71,6 +71,9 @@ class iam_blob_signer implements blob_signer {
             throw new \moodle_exception('settings:gcs:autherror', 'tool_objectfs', '', 'signBlob', 'invalid service account email');
         }
 
+        global $CFG;
+        // Cron tasks reach this without get_file_storage(), so filelib is not loaded.
+        require_once($CFG->libdir . '/filelib.php');
         $curl = new \curl();
         $curl->setHeader([
             'Authorization: Bearer ' . $this->tokens->get_token(),

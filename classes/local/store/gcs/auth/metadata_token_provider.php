@@ -91,6 +91,9 @@ class metadata_token_provider extends cached_token_provider {
      * @throws \moodle_exception When the server cannot be reached.
      */
     protected function request(string $path): string {
+        global $CFG;
+        // Cron tasks reach this without get_file_storage(), so filelib is not loaded.
+        require_once($CFG->libdir . '/filelib.php');
         $curl = new \curl(['ignoresecurity' => true, 'proxy' => false]);
         $curl->setHeader(['Metadata-Flavor: Google']);
         $curl->setopt(['CURLOPT_CONNECTTIMEOUT' => 2, 'CURLOPT_TIMEOUT' => 5]);

@@ -63,6 +63,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - With external deletion set to full, orphans past the grace period also lose their remote object (upstream
   #693, ported ahead of its merge).
 - `mutations/gates.conf`: mutation spec holding each fork guard to the test written for it.
+- Cron tasks no longer die on classes filelib declares: the Cloud Storage token providers and IAM signer load
+  it before building a `\curl`, and a failed local directory creation in the puller throws `file_exception`
+  instead of "Class not found". The Swift stream wrapper's write-guard warning calls `trigger_error` (it called
+  an undefined `tigger_error`).
 
 ### Added
 
