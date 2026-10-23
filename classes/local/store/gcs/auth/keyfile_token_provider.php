@@ -129,6 +129,9 @@ class keyfile_token_provider extends cached_token_provider implements blob_signe
             'exp' => $now + HOURSECS,
         ]);
 
+        global $CFG;
+        // Cron tasks reach this without get_file_storage(), so filelib is not loaded.
+        require_once($CFG->libdir . '/filelib.php');
         $curl = new \curl();
         $body = $curl->post(self::TOKEN_URI, [
             'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',

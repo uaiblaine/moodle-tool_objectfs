@@ -355,6 +355,8 @@ abstract class object_file_system extends \file_system_filedir {
      * @return int
      */
     public function copy_object_from_external_to_local_by_hash($contenthash, $objectsize = 0) {
+        global $CFG;
+
         $initiallocation = $this->get_object_location_from_hash($contenthash);
         $finallocation = $initiallocation;
 
@@ -366,6 +368,8 @@ abstract class object_file_system extends \file_system_filedir {
                 mkdir($localdirpath, $this->dirpermissions, true);
                 // Re-check after mkdir() to handle the race where $localdirpath is created between is_dir() and mkdir().
                 if (!is_dir($localdirpath)) {
+                    // The puller task builds this file system without get_file_storage(), so filelib is not loaded.
+                    require_once($CFG->libdir . '/filelib.php');
                     // Permission trouble.
                     throw new \file_exception('storedfilecannotcreatefiledirs');
                 }
