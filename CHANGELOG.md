@@ -74,6 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   path instead of its `ab/cd/<hash>` key and never reported success, so the object stayed local and was
   uploaded again on every pusher run. Objects above 5 GiB still go up as large objects through the stream
   wrapper.
+- Redirects to pre-signed and Cloud CDN URLs no longer go through core `redirect()`, which wrote a new
+  `core/htmlpurifier` cache entry, never read again, on every file request (upstream #776, ported ahead of
+  its merge).
 
 ### Added
 
