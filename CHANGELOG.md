@@ -47,6 +47,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the store settings, SDK credential provider chain check, `preferexternal` moved to the general settings,
   presigning refused for long-lived public cache headers (#469), pre-signed URL normalisation in editor
   content (#368).
+- Merged upstream `MOODLE_404_STABLE` up to 60d2e29 (release `2026041013`, `2026041013+uai.1`): upstream's
+  composer publishing and `supported` up to 5.3 (#768, CI and version only, not taken over), and #774's Swift
+  upload override, which the fork removes again (see Fixed).
 - Release names follow `<upstream release>+uai.<N>`; `$plugin->version` follows upstream's date scheme.
 - CI: one MAH job for `MOODLE_503_STABLE`.
 
@@ -67,6 +70,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it before building a `\curl`, and a failed local directory creation in the puller throws `file_exception`
   instead of "Class not found". The Swift stream wrapper's write-guard warning calls `trigger_error` (it called
   an undefined `tigger_error`).
+- Swift: pushes no longer go through upstream #774's override, which uploaded each object under its local
+  path instead of its `ab/cd/<hash>` key and never reported success, so the object stayed local and was
+  uploaded again on every pusher run. Objects above 5 GiB still go up as large objects through the stream
+  wrapper.
 
 ### Added
 
