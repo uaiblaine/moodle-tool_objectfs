@@ -40,6 +40,12 @@ class client extends s3_client {
     public function __construct($config) {
         if ($this->get_availability() && !empty($config)) {
             $this->bucket = $config->do_space;
+            $this->maxupload = OBJECTFS_BYTES_IN_TERABYTE * 5;
+            // A configuration may carry only the do_* keys, as the connection tests build it.
+            $this->expirationtime = $config->expirationtime ?? null;
+            $this->presignedminfilesize = $config->presignedminfilesize ?? null;
+            $this->enablepresignedurls = $config->enablepresignedurls ?? null;
+
             $this->set_client($config);
         } else {
             parent::__construct($config);
