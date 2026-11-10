@@ -77,6 +77,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Redirects to pre-signed and Cloud CDN URLs no longer go through core `redirect()`, which wrote a new
   `core/htmlpurifier` cache entry, never read again, on every file request (upstream #776, ported ahead of
   its merge).
+- The mime type report counts images, videos and H5P packages under categories of their own; on MariaDB images
+  and videos had an empty category (upstream #479, ported ahead of its merge).
+- The DigitalOcean Spaces client takes the upload limit and the pre-signed URL settings from the configuration.
+  Without the limit the pusher selected no file at all, and pre-signed URLs expired after two minutes whatever
+  the setting (upstream #413, ported ahead of its merge).
 
 ### Added
 
