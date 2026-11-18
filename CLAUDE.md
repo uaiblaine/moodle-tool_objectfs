@@ -48,15 +48,16 @@ definition, and none runs on the session model.
 ## Commands
 
 ```sh
-mdl ci moodle-tool_objectfs-503 --matrix --behat   # pre-merge gate (repo dir name, not a path)
+mdl ci moodle-tool_objectfs-503 --matrix          # tier-3 gate (repo dir name, not a path); at home one leg per host
 mdl ci moodle-tool_objectfs-503 --only phpunit     # one leg, fast iteration
-mdl phpunit m503 tool_objectfs                     # once the checkout is mounted on m503
+mdl phpunit m503 tool_objectfs                     # the checkout is mounted on m503 and m503b
 ```
 
 The 5.3 checkout is `~/dev/moodle-tool_objectfs-503` (a worktree of `~/dev/moodle-tool_objectfs`,
-branch `main`). Until the mount switch, `plugins.conf` still mounts the old checkout
-(`MOODLE_501_STABLE`, frozen) on m501/m502; `mdl ci` runs the 5.3 checkout by directory name without
-any mount.
+branch `main`), mounted on m503, m503b and the mini cluster (`plugins.conf`, `auto` from
+`$plugin->supported`). The plugin is installed there but no stack sets `alternative_file_system_class`,
+so the file system in use stays core's until a task configures it. The frozen `MOODLE_501_STABLE`
+checkout (`~/dev/moodle-tool_objectfs`) is mounted nowhere.
 
 ## Code layout
 
