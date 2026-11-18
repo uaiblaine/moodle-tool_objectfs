@@ -74,10 +74,12 @@ FORK.md                                   branch model, sync procedure, patch le
 
 ## Architecture gotchas
 
-- **`tool_objectfs_objects.location` is a single small int today; upstream is replacing it with three
-  bit columns** (`in_filedir`, `in_mdl_files`, `in_remote`) in two upgrade steps (#771 `2026092200`,
-  `bits-and-bobs` `2026092300`). Never write a new query or index on `location` in `main` without a
-  `FORK.md` row: it will have to be ported, and an index on `location` makes phase 2 fail.
+- **`tool_objectfs_objects` carries both `location` and upstream's three bit columns** (`in_filedir`,
+  `in_mdl_files`, `in_remote`) since phase 1 of upstream's refactor (step `2026102100`, merged 2026-11-18).
+  `manager::upsert_object()` writes both; `location_query` decides which one a query reads (`location`
+  until the adhoc `migrate_object_locations` task reports complete, the bits after). Write locations only
+  through `upsert_object()` or `update_object_by_hash()`, never `set_field('location')` in production
+  code, and build new location predicates with `location_query`: phase 2 drops `location`.
 - **Never install `sync/bits-preview` on a site that has data you keep** — see `FORK.md`.
 - The `\core_files\hook\before_editor_content_saved` callback in `db/hooks.php` (upstream #368) targets a
   hook class core 5.3 does not have; it is dormant until core ships it, so the pre-signed URL
@@ -87,6 +89,8 @@ FORK.md                                   branch model, sync procedure, patch le
   namespaced function PHP cannot autoload.
 - Version numbers follow upstream's date scheme, not the fleet's `20261005XX` namespace: `FORK.md`,
   "Sync procedure", says why.
+  An incoming upstream savepoint below the fork's version is skipped on fork sites: add a catch-up step
+  (`FORK.md` P25).
 
 ## Testing notes
 

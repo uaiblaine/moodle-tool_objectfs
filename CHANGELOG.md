@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Upstream 2026102101 (sync 2026-11-18)
+
+- Merged upstream `MOODLE_404_STABLE` up to 66f7792 (release `2026102101`, `2026102101+uai.1`): phase 1 of the
+  location-bits refactor (#771). `tool_objectfs_objects` gains `in_filedir`, `in_mdl_files` and `in_remote` with
+  the index `ix_location_bits`; an adhoc task (`migrate_object_locations`) fills them in batches and the
+  connection check reports its progress; candidate queries read the bits once it completes. The location report
+  no longer joins `{files}` and the migration backfills missing file sizes (#505); a CLI resets the migration
+  (`cli/objectfs_reset_location_bits.php`).
+- Fork step `2026111800` adds the bit columns and starts the migration on sites upgraded from the fork's
+  `2026111000`, which skipped upstream's `2026102100` step (`FORK.md` P25).
+- Upstream sorted the `presignpublicurls*` strings itself; the fork's P8 is no longer a patch.
+
 ### Added
 
 - Google Cloud Storage store (`\tool_objectfs\gcs_file_system`): the Cloud Storage XML API through core's AWS
