@@ -157,7 +157,7 @@ class migrate_object_locations extends adhoc_task {
                 mtrace("tool_objectfs location bits migration: {$donesofar}/{$total} ({$percent}%) complete.");
             }
 
-            // progress_bar::update() divides by the total, so skip it for an empty table.
+            // The progress_bar::update() call divides by the total, so skip it for an empty table.
             if ($this->progress !== null && $total > 0) {
                 $this->progress->update($donesofar, $total, 'tool_objectfs location bits migration:');
             }

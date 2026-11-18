@@ -70,6 +70,7 @@ final class upgradelib_test extends \advanced_testcase {
             'contenthash' => sha1('upgradelib'),
             'location' => OBJECT_LOCATION_LOCAL,
             'filesize' => 10,
+            'timeduplicated' => time(),
         ]);
 
         tool_objectfs_upgrade_add_location_bits();
